@@ -25,11 +25,43 @@ app.add_middleware(
 
 openai.api_key = settings.openai_api_key
 
-# Initialize debabelizer processors
-debabelizer_config = DebabelizerConfig({
-    "openai": {"api_key": settings.openai_api_key},
-    "whisper": {"model_size": "base"},
-})
+# Create debabelizer configuration with API keys from settings
+def create_debabelizer_config():
+    """Create DebabelizerConfig with API keys for all supported STT and TTS providers"""
+    config_dict = {}
+    
+    # STT Providers
+    if hasattr(settings, 'deepgram_api_key') and settings.deepgram_api_key:
+        config_dict['deepgram'] = {'api_key': settings.deepgram_api_key}
+    
+    if hasattr(settings, 'openai_api_key') and settings.openai_api_key:
+        config_dict['openai'] = {'api_key': settings.openai_api_key}
+    
+    if hasattr(settings, 'azure_speech_key') and settings.azure_speech_key:
+        config_dict['azure'] = {'api_key': settings.azure_speech_key}
+        if hasattr(settings, 'azure_speech_region') and settings.azure_speech_region:
+            config_dict['azure']['region'] = settings.azure_speech_region
+    
+    if hasattr(settings, 'google_application_credentials') and settings.google_application_credentials:
+        config_dict['google'] = {'credentials_path': settings.google_application_credentials}
+    
+    if hasattr(settings, 'soniox_api_key') and settings.soniox_api_key:
+        config_dict['soniox'] = {'api_key': settings.soniox_api_key}
+    
+    # TTS Providers  
+    if hasattr(settings, 'elevenlabs_api_key') and settings.elevenlabs_api_key:
+        if 'elevenlabs' not in config_dict:
+            config_dict['elevenlabs'] = {}
+        config_dict['elevenlabs']['api_key'] = settings.elevenlabs_api_key
+    
+    # Set preferences based on environment settings
+    config_dict['preferences'] = {
+        'optimize_for': getattr(settings, 'debabelizer_optimize_for', 'balanced')
+    }
+    
+    return DebabelizerConfig(config_dict)
+
+debabelizer_config = create_debabelizer_config()
 
 # Global processor instances
 stt_processor = None
@@ -120,46 +152,71 @@ async def debabelize_text(text: str) -> str:
     """
     Process text through debabelizer voice pipeline:
     Text -> TTS -> Audio -> STT -> Corrected Text
-    
-    Note: There's currently a bug in debabelizer with ElevenLabs provider configuration
-    that causes "got multiple values for argument 'api_key'" error.
-    Using OpenAI TTS + Soniox STT as a working alternative.
     """
     try:
-        # Temporary workaround: Use Whisper for demonstration to avoid API key conflicts
-        # TODO: Debug and fix API key configuration issues in debabelizer
+        global tts_processor, stt_processor
         
-        # Use Whisper for demonstration (local, no API keys needed)
-        config = DebabelizerConfig({
-            "whisper": {
-                "model_size": "base",
-                "device": "auto"
-            }
-        })
+        if not tts_processor or not stt_processor:
+            return text
         
-        # For now, just use Whisper STT processor for demonstration
-        # In a real scenario, we'd want the full TTS->STT pipeline
-        stt_processor = VoiceProcessor(stt_provider="whisper", config=config)
+        # Convert text to speech
+        tts_result = await tts_processor.synthesize(text=text)
         
-        # Simulate the debabelizing process by adding some processing markers
-        # TODO: Implement full TTS->STT once API key issues are resolved
-        processed_text = f"[DEBABELIZED via Whisper] {text}"
+        # Convert audio back to text
+        stt_result = await stt_processor.transcribe_audio(
+            audio_data=tts_result.audio_data,
+            audio_format=settings.elevenlabs_output_format.split('_')[0]
+        )
         
-        return processed_text
+        return stt_result.text
         
     except Exception as e:
         print(f"Debabelizer error: {e}")
-        # Fallback to original text if debabelizing fails
         return text
 
 @app.on_event("startup")
 async def startup_event():
     global stt_processor, tts_processor
     try:
-        stt_processor = VoiceProcessor(stt_provider="whisper", config=debabelizer_config)
-        tts_processor = VoiceProcessor(tts_provider="openai", config=debabelizer_config)
+        print(f"Starting initialization with STT provider: {settings.debabelizer_stt_provider}, TTS provider: {settings.debabelizer_tts_provider}")
+        print(f"Available API keys: Deepgram={bool(settings.deepgram_api_key)}, ElevenLabs={bool(settings.elevenlabs_api_key)}, OpenAI={bool(settings.openai_api_key)}")
+        
+        # Create VoiceProcessor instances with explicit provider settings
+        if settings.debabelizer_stt_provider and (
+            (settings.debabelizer_stt_provider == 'deepgram' and settings.deepgram_api_key) or
+            (settings.debabelizer_stt_provider == 'openai' and settings.openai_api_key) or
+            (settings.debabelizer_stt_provider == 'azure' and settings.azure_speech_key) or
+            (settings.debabelizer_stt_provider == 'soniox' and settings.soniox_api_key) or
+            (settings.debabelizer_stt_provider == 'whisper') or  # Whisper doesn't need API key
+            (settings.debabelizer_stt_provider == 'google' and settings.google_application_credentials)
+        ):
+            stt_processor = VoiceProcessor(
+                stt_provider=settings.debabelizer_stt_provider,
+                config=debabelizer_config
+            )
+            print(f"STT processor created with {settings.debabelizer_stt_provider}")
+        else:
+            print(f"STT provider {settings.debabelizer_stt_provider} not configured or missing API key")
+        
+        if settings.debabelizer_tts_provider and (
+            (settings.debabelizer_tts_provider == 'elevenlabs' and settings.elevenlabs_api_key) or
+            (settings.debabelizer_tts_provider == 'openai' and settings.openai_api_key) or
+            (settings.debabelizer_tts_provider == 'azure' and settings.azure_speech_key) or
+            (settings.debabelizer_tts_provider == 'google' and settings.google_application_credentials)
+        ):
+            tts_processor = VoiceProcessor(
+                tts_provider=settings.debabelizer_tts_provider,
+                config=debabelizer_config
+            )
+            print(f"TTS processor created with {settings.debabelizer_tts_provider}")
+        else:
+            print(f"TTS provider {settings.debabelizer_tts_provider} not configured or missing API key")
+        
+        print(f"Initialization complete. STT: {bool(stt_processor)}, TTS: {bool(tts_processor)}")
     except Exception as e:
         print(f"Error initializing processors: {e}")
+        import traceback
+        traceback.print_exc()
 
 @app.post("/stt", response_model=STTResponse)
 async def speech_to_text(audio: UploadFile = File(...)):
@@ -190,9 +247,18 @@ async def text_to_speech(request: TTSRequest):
         if not tts_processor:
             raise HTTPException(status_code=500, detail="TTS processor not initialized")
         
+        # Use appropriate default voice based on provider
+        default_voice = "alloy"  # OpenAI voice
+        if settings.debabelizer_tts_provider == "elevenlabs":
+            default_voice = "21m00Tcm4TlvDq8ikWAM"  # ElevenLabs Rachel voice ID
+        elif settings.debabelizer_tts_provider == "azure":
+            default_voice = "en-US-JennyNeural"  # Azure voice
+        elif settings.debabelizer_tts_provider == "google":
+            default_voice = "en-US-Standard-A"  # Google voice
+        
         result = await tts_processor.synthesize(
             request.text,
-            voice=request.voice or "alloy",
+            voice=request.voice or default_voice,
             language=request.language
         )
         
@@ -213,27 +279,28 @@ async def websocket_stt(websocket: WebSocket):
             await websocket.send_json({"error": "STT processor not initialized"})
             return
         
-        streaming_session = await stt_processor.start_streaming()
+        # Start streaming transcription session
+        session_id = await stt_processor.start_streaming_transcription(
+            audio_format="webm",
+            sample_rate=48000  # Default for most browsers
+        )
         
-        async def handle_audio():
-            while True:
-                data = await websocket.receive_bytes()
-                await stt_processor.stream_audio(streaming_session, data)
-                
-                results = await stt_processor.get_streaming_results(streaming_session)
-                if results:
-                    for result in results:
-                        await websocket.send_json({
-                            "text": result.text,
-                            "is_final": result.is_final,
-                            "language": result.language
-                        })
-        
-        await handle_audio()
+        # Handle incoming audio and send back results
+        while True:
+            data = await websocket.receive_bytes()
+            await stt_processor.stream_audio(session_id, data)
+            
+            # Get streaming results
+            async for result in stt_processor.get_streaming_results(session_id):
+                await websocket.send_json({
+                    "text": result.text,
+                    "is_final": result.is_final,
+                    "language": result.language_detected if hasattr(result, 'language_detected') else None
+                })
         
     except WebSocketDisconnect:
-        if streaming_session:
-            await stt_processor.stop_streaming(streaming_session)
+        if 'session_id' in locals():
+            await stt_processor.stop_streaming_transcription(session_id)
     except Exception as e:
         await websocket.send_json({"error": str(e)})
         await websocket.close()

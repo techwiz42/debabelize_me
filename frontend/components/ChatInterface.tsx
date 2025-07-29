@@ -16,6 +16,9 @@ export default function ChatInterface() {
   const [isPlaybackEnabled, setIsPlaybackEnabled] = useState(true);
   const [isLoading, setIsLoading] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const wsRef = useRef<WebSocket | null>(null);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -47,6 +50,23 @@ export default function ChatInterface() {
       };
       
       setMessages(prev => [...prev, assistantMessage]);
+      
+      // Play audio if playback is enabled
+      if (isPlaybackEnabled) {
+        try {
+          const audioBlob = await apiService.textToSpeech(response.response);
+          const audioUrl = URL.createObjectURL(audioBlob);
+          const audio = new Audio(audioUrl);
+          audio.play();
+          
+          // Clean up URL after audio finishes
+          audio.addEventListener('ended', () => {
+            URL.revokeObjectURL(audioUrl);
+          });
+        } catch (error) {
+          console.error('Error playing audio:', error);
+        }
+      }
     } catch (error) {
       console.error('Error sending message:', error);
       
@@ -63,8 +83,67 @@ export default function ChatInterface() {
     }
   };
 
-  const toggleRecording = () => {
-    setIsRecording(!isRecording);
+  const toggleRecording = async () => {
+    if (!isRecording) {
+      // Start recording
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const mediaRecorder = new MediaRecorder(stream);
+        mediaRecorderRef.current = mediaRecorder;
+        audioChunksRef.current = [];
+
+        // Connect to WebSocket for streaming STT
+        const wsUrl = process.env.NEXT_PUBLIC_WS_URL;
+        const ws = new WebSocket(`${wsUrl}/ws/stt`);
+        wsRef.current = ws;
+
+        ws.onopen = () => {
+          console.log('WebSocket connected for STT');
+        };
+
+        ws.onmessage = (event) => {
+          const data = JSON.parse(event.data);
+          if (data.error) {
+            console.error('STT error:', data.error);
+          } else if (data.is_final && data.text) {
+            // Send the final transcribed text as a message
+            handleSendMessage(data.text);
+          }
+        };
+
+        ws.onerror = (error) => {
+          console.error('WebSocket error:', error);
+        };
+
+        mediaRecorder.ondataavailable = (event) => {
+          if (event.data.size > 0) {
+            audioChunksRef.current.push(event.data);
+            // Send audio data to WebSocket
+            if (ws.readyState === WebSocket.OPEN) {
+              ws.send(event.data);
+            }
+          }
+        };
+
+        mediaRecorder.start(100); // Send data every 100ms
+        setIsRecording(true);
+      } catch (error) {
+        console.error('Error starting recording:', error);
+        alert('Unable to access microphone. Please check permissions.');
+      }
+    } else {
+      // Stop recording
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+        mediaRecorderRef.current.stop();
+        mediaRecorderRef.current.stream.getTracks().forEach(track => track.stop());
+      }
+      
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        wsRef.current.close();
+      }
+      
+      setIsRecording(false);
+    }
   };
 
   const togglePlayback = () => {

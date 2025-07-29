@@ -13,7 +13,7 @@ class ApiService {
   private baseUrl: string;
 
   constructor() {
-    this.baseUrl = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8005';
+    this.baseUrl = process.env.NEXT_PUBLIC_BACKEND_URL!;
   }
 
   async sendMessage(message: string, language?: string): Promise<ChatResponse> {
@@ -35,6 +35,26 @@ class ApiService {
     }
 
     return await response.json();
+  }
+
+  async textToSpeech(text: string, voice?: string, language?: string): Promise<Blob> {
+    const response = await fetch(`${this.baseUrl}/tts`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        text,
+        voice,
+        language
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+
+    return await response.blob();
   }
 }
 
