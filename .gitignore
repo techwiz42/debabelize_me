@@ -32,6 +32,11 @@ MANIFEST
 venv/
 env/
 ENV/
+frontend/node_modules
+
+# Next.js
+frontend/.next/
+frontend/out/
 
 # IDE
 .vscode/
