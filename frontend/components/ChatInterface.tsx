@@ -80,6 +80,7 @@ export default function ChatInterface() {
   const [isPlaybackEnabled, setIsPlaybackEnabled] = useState(true);
   const [isLoading, setIsLoading] = useState(false);
   const [selectedLanguage, setSelectedLanguage] = useState('auto');
+  const [sessionId, setSessionId] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
@@ -105,7 +106,12 @@ export default function ChatInterface() {
     setIsLoading(true);
     
     try {
-      const response = await apiService.sendMessage(content, selectedLanguage);
+      const response = await apiService.sendMessage(content, selectedLanguage, sessionId || undefined);
+      
+      // Store the session ID from the response
+      if (response.session_id && !sessionId) {
+        setSessionId(response.session_id);
+      }
       
       const assistantMessage: Message = {
         id: (Date.now() + 1).toString(),
@@ -214,6 +220,31 @@ export default function ChatInterface() {
   const togglePlayback = () => {
     setIsPlaybackEnabled(!isPlaybackEnabled);
   };
+  
+  const clearConversation = async () => {
+    if (confirm('Are you sure you want to start a new conversation?')) {
+      // Clear messages locally
+      setMessages([]);
+      
+      // Clear server-side conversation if we have a session
+      if (sessionId) {
+        try {
+          await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL}/clear-conversation`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ session_id: sessionId }),
+          });
+        } catch (error) {
+          console.error('Error clearing conversation:', error);
+        }
+      }
+      
+      // Reset session ID to start a new session
+      setSessionId(null);
+    }
+  };
 
   return (
     <div className="chat-interface">
@@ -248,6 +279,13 @@ export default function ChatInterface() {
               title={isPlaybackEnabled ? 'Disable Audio Output' : 'Enable Audio Output'}
             >
               {isPlaybackEnabled ? '🔊' : '🔇'}
+            </button>
+            <button
+              className="audio-control-btn new-chat-btn"
+              onClick={clearConversation}
+              title="Start New Conversation"
+            >
+              🆕
             </button>
           </div>
         </div>

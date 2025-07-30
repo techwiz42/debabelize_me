@@ -101,6 +101,15 @@ body {
   opacity: 0.5;
 }
 
+.audio-control-btn.new-chat-btn {
+  border-color: #28a745;
+}
+
+.audio-control-btn.new-chat-btn:hover {
+  border-color: #218838;
+  background-color: #f0fff4;
+}
+
 .messages-container {
   flex: 1;
   overflow-y: auto;

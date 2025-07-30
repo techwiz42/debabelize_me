@@ -1,12 +1,14 @@
 interface ChatMessage {
   message: string;
   language?: string;
+  session_id?: string;
 }
 
 interface ChatResponse {
   response: string;
   debabelized_text: string;
   response_language?: string;
+  session_id: string;
 }
 
 class ApiService {
@@ -16,10 +18,11 @@ class ApiService {
     this.baseUrl = process.env.NEXT_PUBLIC_BACKEND_URL!;
   }
 
-  async sendMessage(message: string, language?: string): Promise<ChatResponse> {
+  async sendMessage(message: string, language?: string, sessionId?: string): Promise<ChatResponse> {
     const payload: ChatMessage = {
       message,
-      language
+      language,
+      session_id: sessionId
     };
 
     const response = await fetch(`${this.baseUrl}/chat`, {

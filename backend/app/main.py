@@ -68,17 +68,28 @@ debabelizer_config = create_debabelizer_config()
 stt_processor = None
 tts_processor = None
 
-# Store conversation history
-conversation_history: List[dict] = []
+# Store conversation history per session
+from typing import Dict
+import uuid
+from datetime import datetime, timedelta
+
+session_conversations: Dict[str, Dict[str, any]] = {}
+
+# Session cleanup settings
+SESSION_TIMEOUT_HOURS = 24
+CLEANUP_INTERVAL_HOURS = 1
+last_cleanup = datetime.now()
 
 class ChatMessage(BaseModel):
     message: str
     language: Optional[str] = None
+    session_id: Optional[str] = None
 
 class ChatResponse(BaseModel):
     response: str
     debabelized_text: str
     response_language: Optional[str] = None
+    session_id: str
 
 class TTSRequest(BaseModel):
     text: str
@@ -148,6 +159,53 @@ search_tools = [
         }
     }
 ]
+
+def cleanup_old_sessions():
+    """Remove sessions that haven't been accessed in SESSION_TIMEOUT_HOURS."""
+    global last_cleanup
+    current_time = datetime.now()
+    
+    # Only run cleanup if enough time has passed
+    if current_time - last_cleanup < timedelta(hours=CLEANUP_INTERVAL_HOURS):
+        return
+    
+    last_cleanup = current_time
+    timeout_threshold = current_time - timedelta(hours=SESSION_TIMEOUT_HOURS)
+    
+    sessions_to_remove = []
+    for session_id, session_data in session_conversations.items():
+        if session_data.get('last_accessed', current_time) < timeout_threshold:
+            sessions_to_remove.append(session_id)
+    
+    for session_id in sessions_to_remove:
+        del session_conversations[session_id]
+    
+    if sessions_to_remove:
+        print(f"Cleaned up {len(sessions_to_remove)} old sessions")
+
+def get_or_create_session(session_id: Optional[str] = None) -> str:
+    """Get existing session or create a new one."""
+    cleanup_old_sessions()
+    
+    if not session_id or session_id not in session_conversations:
+        session_id = str(uuid.uuid4())
+        session_conversations[session_id] = {
+            'conversation_history': [],
+            'created_at': datetime.now(),
+            'last_accessed': datetime.now()
+        }
+        print(f"Created new session: {session_id}")
+    else:
+        # Update last accessed time
+        session_conversations[session_id]['last_accessed'] = datetime.now()
+    
+    return session_id
+
+def get_session_conversation_history(session_id: str) -> List[dict]:
+    """Get conversation history for a specific session."""
+    if session_id in session_conversations:
+        return session_conversations[session_id]['conversation_history']
+    return []
 
 async def debabelize_text(text: str) -> str:
     """
@@ -319,7 +377,11 @@ async def websocket_stt(websocket: WebSocket):
 @app.post("/chat", response_model=ChatResponse)
 async def chat(message: ChatMessage):
     try:
-        # Add to conversation history
+        # Get or create session
+        session_id = get_or_create_session(message.session_id)
+        conversation_history = get_session_conversation_history(session_id)
+        
+        # Add to session-specific conversation history
         conversation_history.append({"role": "user", "content": message.message})
         
         # Use full conversation history for context
@@ -454,7 +516,8 @@ async def chat(message: ChatMessage):
         return ChatResponse(
             response=ai_response,
             debabelized_text=message.message,
-            response_language=response_language
+            response_language=response_language,
+            session_id=session_id
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error processing request: {str(e)}")
@@ -469,8 +532,13 @@ async def websocket_chat(websocket: WebSocket):
             data = await websocket.receive_json()
             message = data.get("message", "")
             language = data.get("language")
+            session_id_input = data.get("session_id")
             
-            # Add to conversation history
+            # Get or create session
+            session_id = get_or_create_session(session_id_input)
+            conversation_history = get_session_conversation_history(session_id)
+            
+            # Add to session-specific conversation history
             conversation_history.append({"role": "user", "content": message})
             
             # Use full conversation history for context
@@ -606,7 +674,8 @@ async def websocket_chat(websocket: WebSocket):
                         full_response += content
                         await websocket.send_json({
                             "type": "content",
-                            "content": content
+                            "content": content,
+                            "session_id": session_id
                         })
             else:
                 # No function calls, stream normally
@@ -625,7 +694,8 @@ async def websocket_chat(websocket: WebSocket):
                         full_response += content
                         await websocket.send_json({
                             "type": "content",
-                            "content": content
+                            "content": content,
+                            "session_id": session_id
                         })
             
             # Add AI response to history
@@ -634,7 +704,8 @@ async def websocket_chat(websocket: WebSocket):
             # Send completion signal
             await websocket.send_json({
                 "type": "complete",
-                "full_response": full_response
+                "full_response": full_response,
+                "session_id": session_id
             })
             
     except WebSocketDisconnect:
@@ -643,12 +714,23 @@ async def websocket_chat(websocket: WebSocket):
         await websocket.send_json({"type": "error", "error": str(e)})
         await websocket.close()
 
+class ClearConversationRequest(BaseModel):
+    session_id: Optional[str] = None
+
 @app.post("/clear-conversation")
-async def clear_conversation():
-    """Clear the conversation history."""
-    global conversation_history
-    conversation_history = []
-    return {"message": "Conversation history cleared"}
+async def clear_conversation(request: ClearConversationRequest):
+    """Clear the conversation history for a specific session or all sessions."""
+    if request.session_id:
+        # Clear specific session
+        if request.session_id in session_conversations:
+            session_conversations[request.session_id]['conversation_history'] = []
+            return {"message": f"Conversation history cleared for session {request.session_id}"}
+        else:
+            return {"message": "Session not found"}
+    else:
+        # Clear all sessions (backward compatibility)
+        session_conversations.clear()
+        return {"message": "All conversation histories cleared"}
 
 @app.get("/health")
 async def health_check():
