@@ -1,7 +1,11 @@
 # CLAUDE.md - Project Context for Claude Code
 
 ## Project Overview
-Debabelize Me is a voice-enabled chat application that uses the debabelizer module for speech-to-text (STT) and text-to-speech (TTS) functionality. The app features a React/Next.js frontend and a FastAPI backend.
+Debabelize Me is a voice-enabled chat application that leverages the **debabelizer module** for all speech-to-text (STT) and text-to-speech (TTS) functionality. The debabelizer module provides a unified, provider-agnostic interface for voice services. The app features a React/Next.js frontend and a FastAPI backend.
+
+**Important**: All STT and TTS functionality is accessed through the debabelizer module - we do not directly integrate with providers like Deepgram or ElevenLabs. See the debabelizer documentation at `~/debabelizer/README.md` for detailed information about the module's capabilities and configuration.
+
+**Current Status**: TTS is fully functional, while STT implementation is still in progress.
 
 ## Architecture
 

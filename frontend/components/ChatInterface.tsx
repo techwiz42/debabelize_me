@@ -10,11 +10,76 @@ interface Message {
   timestamp: Date;
 }
 
+const SUPPORTED_LANGUAGES = [
+  { code: 'auto', name: 'Auto-detect' },
+  { code: 'af', name: 'Afrikaans' },
+  { code: 'sq', name: 'Albanian' },
+  { code: 'ar', name: 'Arabic' },
+  { code: 'az', name: 'Azerbaijani' },
+  { code: 'eu', name: 'Basque' },
+  { code: 'be', name: 'Belarusian' },
+  { code: 'bn', name: 'Bengali' },
+  { code: 'bs', name: 'Bosnian' },
+  { code: 'bg', name: 'Bulgarian' },
+  { code: 'ca', name: 'Catalan' },
+  { code: 'zh', name: 'Chinese' },
+  { code: 'hr', name: 'Croatian' },
+  { code: 'cs', name: 'Czech' },
+  { code: 'da', name: 'Danish' },
+  { code: 'nl', name: 'Dutch' },
+  { code: 'en', name: 'English' },
+  { code: 'et', name: 'Estonian' },
+  { code: 'fi', name: 'Finnish' },
+  { code: 'fr', name: 'French' },
+  { code: 'gl', name: 'Galician' },
+  { code: 'de', name: 'German' },
+  { code: 'el', name: 'Greek' },
+  { code: 'gu', name: 'Gujarati' },
+  { code: 'he', name: 'Hebrew' },
+  { code: 'hi', name: 'Hindi' },
+  { code: 'hu', name: 'Hungarian' },
+  { code: 'id', name: 'Indonesian' },
+  { code: 'it', name: 'Italian' },
+  { code: 'ja', name: 'Japanese' },
+  { code: 'kn', name: 'Kannada' },
+  { code: 'kk', name: 'Kazakh' },
+  { code: 'ko', name: 'Korean' },
+  { code: 'lv', name: 'Latvian' },
+  { code: 'lt', name: 'Lithuanian' },
+  { code: 'mk', name: 'Macedonian' },
+  { code: 'ms', name: 'Malay' },
+  { code: 'ml', name: 'Malayalam' },
+  { code: 'mr', name: 'Marathi' },
+  { code: 'no', name: 'Norwegian' },
+  { code: 'fa', name: 'Persian' },
+  { code: 'pl', name: 'Polish' },
+  { code: 'pt', name: 'Portuguese' },
+  { code: 'pa', name: 'Punjabi' },
+  { code: 'ro', name: 'Romanian' },
+  { code: 'ru', name: 'Russian' },
+  { code: 'sr', name: 'Serbian' },
+  { code: 'sk', name: 'Slovak' },
+  { code: 'sl', name: 'Slovenian' },
+  { code: 'es', name: 'Spanish' },
+  { code: 'sw', name: 'Swahili' },
+  { code: 'sv', name: 'Swedish' },
+  { code: 'tl', name: 'Tagalog' },
+  { code: 'ta', name: 'Tamil' },
+  { code: 'te', name: 'Telugu' },
+  { code: 'th', name: 'Thai' },
+  { code: 'tr', name: 'Turkish' },
+  { code: 'uk', name: 'Ukrainian' },
+  { code: 'ur', name: 'Urdu' },
+  { code: 'vi', name: 'Vietnamese' },
+  { code: 'cy', name: 'Welsh' }
+];
+
 export default function ChatInterface() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [isRecording, setIsRecording] = useState(false);
   const [isPlaybackEnabled, setIsPlaybackEnabled] = useState(true);
   const [isLoading, setIsLoading] = useState(false);
+  const [selectedLanguage, setSelectedLanguage] = useState('auto');
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
@@ -40,7 +105,7 @@ export default function ChatInterface() {
     setIsLoading(true);
     
     try {
-      const response = await apiService.sendMessage(content);
+      const response = await apiService.sendMessage(content, selectedLanguage);
       
       const assistantMessage: Message = {
         id: (Date.now() + 1).toString(),
@@ -54,7 +119,7 @@ export default function ChatInterface() {
       // Play audio if playback is enabled
       if (isPlaybackEnabled) {
         try {
-          const audioBlob = await apiService.textToSpeech(response.response);
+          const audioBlob = await apiService.textToSpeech(response.response, undefined, response.response_language || selectedLanguage);
           const audioUrl = URL.createObjectURL(audioBlob);
           const audio = new Audio(audioUrl);
           audio.play();
@@ -156,21 +221,35 @@ export default function ChatInterface() {
         <div className="header-title">
           <h1>Debabelize</h1>
         </div>
-        <div className="audio-controls">
-          <button
-            className={`audio-control-btn ${isRecording ? 'recording' : ''}`}
-            onClick={toggleRecording}
-            title={isRecording ? 'Stop Recording' : 'Start Recording'}
+        <div className="header-controls">
+          <select
+            className="language-selector"
+            value={selectedLanguage}
+            onChange={(e) => setSelectedLanguage(e.target.value)}
+            title="Select response language"
           >
-            {isRecording ? '🛑' : '🎤'}
-          </button>
-          <button
-            className={`audio-control-btn ${isPlaybackEnabled ? 'enabled' : 'disabled'}`}
-            onClick={togglePlayback}
-            title={isPlaybackEnabled ? 'Disable Audio Output' : 'Enable Audio Output'}
-          >
-            {isPlaybackEnabled ? '🔊' : '🔇'}
-          </button>
+            {SUPPORTED_LANGUAGES.map((lang) => (
+              <option key={lang.code} value={lang.code}>
+                {lang.name}
+              </option>
+            ))}
+          </select>
+          <div className="audio-controls">
+            <button
+              className={`audio-control-btn ${isRecording ? 'recording' : ''}`}
+              onClick={toggleRecording}
+              title={isRecording ? 'Stop Recording' : 'Start Recording'}
+            >
+              {isRecording ? '🛑' : '🎤'}
+            </button>
+            <button
+              className={`audio-control-btn ${isPlaybackEnabled ? 'enabled' : 'disabled'}`}
+              onClick={togglePlayback}
+              title={isPlaybackEnabled ? 'Disable Audio Output' : 'Enable Audio Output'}
+            >
+              {isPlaybackEnabled ? '🔊' : '🔇'}
+            </button>
+          </div>
         </div>
       </div>
 
@@ -178,6 +257,14 @@ export default function ChatInterface() {
         {messages.map((message) => (
           <MessageItem key={message.id} message={message} />
         ))}
+        {isLoading && (
+          <div className="message-item assistant-message">
+            <div className="loading-indicator">
+              <div className="loading-circle"></div>
+              <span className="loading-text">Babs is thinking...</span>
+            </div>
+          </div>
+        )}
         <div ref={messagesEndRef} />
       </div>
 

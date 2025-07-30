@@ -11,6 +11,7 @@ import io
 import httpx
 from app.core.config import settings
 from debabelizer import VoiceProcessor, DebabelizerConfig, create_processor
+import traceback
 
 app = FastAPI()
 
@@ -171,6 +172,7 @@ async def debabelize_text(text: str) -> str:
         return stt_result.text
         
     except Exception as e:
+        traceback.print_exc()
         print(f"Debabelizer error: {e}")
         return text
 
@@ -215,7 +217,6 @@ async def startup_event():
         print(f"Initialization complete. STT: {bool(stt_processor)}, TTS: {bool(tts_processor)}")
     except Exception as e:
         print(f"Error initializing processors: {e}")
-        import traceback
         traceback.print_exc()
 
 @app.post("/stt", response_model=STTResponse)
@@ -238,6 +239,7 @@ async def speech_to_text(audio: UploadFile = File(...)):
             confidence=result.confidence
         )
     except Exception as e:
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"STT error: {str(e)}")
 
 @app.post("/tts")
@@ -279,11 +281,20 @@ async def websocket_stt(websocket: WebSocket):
             await websocket.send_json({"error": "STT processor not initialized"})
             return
         
-        # Start streaming transcription session
-        session_id = await stt_processor.start_streaming_transcription(
-            audio_format="webm",
-            sample_rate=48000  # Default for most browsers
-        )
+        # Start streaming transcription session with minimal Deepgram parameters
+        try:
+            print(f"Attempting to start Deepgram streaming session...")
+            session_id = await stt_processor.start_streaming_transcription(
+                audio_format="wav",
+                sample_rate=16000
+            )
+            print(f"Deepgram streaming session started successfully: {session_id}")
+        except Exception as e:
+            print(f"Detailed Deepgram streaming error: {e}")
+            print(f"Error type: {type(e)}")
+            traceback.print_exc()
+            await websocket.send_json({"error": f"Failed to start streaming: {str(e)}"})
+            return
         
         # Handle incoming audio and send back results
         while True:
@@ -320,21 +331,66 @@ async def chat(message: ChatMessage):
         # Add language instruction if specified
         if message.language and message.language != 'auto' and message.language != 'en':
             language_names = {
-                'es': 'Spanish',
-                'fr': 'French',
-                'de': 'German',
-                'it': 'Italian',
-                'pt': 'Portuguese',
-                'ru': 'Russian',
-                'ja': 'Japanese',
-                'ko': 'Korean',
-                'zh': 'Chinese',
+                'af': 'Afrikaans',
+                'sq': 'Albanian',
                 'ar': 'Arabic',
-                'hi': 'Hindi',
-                'pl': 'Polish',
+                'az': 'Azerbaijani',
+                'eu': 'Basque',
+                'be': 'Belarusian',
+                'bn': 'Bengali',
+                'bs': 'Bosnian',
+                'bg': 'Bulgarian',
+                'ca': 'Catalan',
+                'zh': 'Chinese',
+                'hr': 'Croatian',
+                'cs': 'Czech',
+                'da': 'Danish',
                 'nl': 'Dutch',
+                'en': 'English',
+                'et': 'Estonian',
+                'fi': 'Finnish',
+                'fr': 'French',
+                'gl': 'Galician',
+                'de': 'German',
+                'el': 'Greek',
+                'gu': 'Gujarati',
+                'he': 'Hebrew',
+                'hi': 'Hindi',
+                'hu': 'Hungarian',
+                'id': 'Indonesian',
+                'it': 'Italian',
+                'ja': 'Japanese',
+                'kn': 'Kannada',
+                'kk': 'Kazakh',
+                'ko': 'Korean',
+                'lv': 'Latvian',
+                'lt': 'Lithuanian',
+                'mk': 'Macedonian',
+                'ms': 'Malay',
+                'ml': 'Malayalam',
+                'mr': 'Marathi',
+                'no': 'Norwegian',
+                'fa': 'Persian',
+                'pl': 'Polish',
+                'pt': 'Portuguese',
+                'pa': 'Punjabi',
+                'ro': 'Romanian',
+                'ru': 'Russian',
+                'sr': 'Serbian',
+                'sk': 'Slovak',
+                'sl': 'Slovenian',
+                'es': 'Spanish',
+                'sw': 'Swahili',
                 'sv': 'Swedish',
-                'tr': 'Turkish'
+                'tl': 'Tagalog',
+                'ta': 'Tamil',
+                'te': 'Telugu',
+                'th': 'Thai',
+                'tr': 'Turkish',
+                'uk': 'Ukrainian',
+                'ur': 'Urdu',
+                'vi': 'Vietnamese',
+                'cy': 'Welsh'
             }
             language_name = language_names.get(message.language, message.language)
             system_prompt = f"""You are Babs, a friendly and witty AI assistant with a good sense of humor. Always respond in {language_name}. You're helpful but not overly eager - sometimes a little sass or a joke is more appropriate than a lengthy explanation. Keep responses conversational in {language_name} and don't be afraid to be a bit cheeky when the moment calls for it."""
@@ -373,9 +429,14 @@ async def chat(message: ChatMessage):
                     })
             
             # Get final response with function results
+            # Re-create messages with system prompt for language consistency
+            final_messages = [
+                {"role": "system", "content": system_prompt},
+                *conversation_history[1:]  # Skip the old system message if any
+            ]
             final_response = openai.chat.completions.create(
                 model="gpt-4o-mini",
-                messages=conversation_history,  # Use full conversation history
+                messages=final_messages,
                 max_tokens=1000,
                 temperature=0.7,
                 stream=False
@@ -421,21 +482,65 @@ async def websocket_chat(websocket: WebSocket):
             # Add language instruction if specified
             if language and language != 'auto' and language != 'en':
                 language_names = {
-                    'es': 'Spanish',
-                    'fr': 'French',
-                    'de': 'German',
-                    'it': 'Italian',
-                    'pt': 'Portuguese',
-                    'ru': 'Russian',
-                    'ja': 'Japanese',
-                    'ko': 'Korean',
-                    'zh': 'Chinese',
+                    'af': 'Afrikaans',
+                    'sq': 'Albanian',
                     'ar': 'Arabic',
-                    'hi': 'Hindi',
-                    'pl': 'Polish',
+                    'az': 'Azerbaijani',
+                    'eu': 'Basque',
+                    'be': 'Belarusian',
+                    'bn': 'Bengali',
+                    'bs': 'Bosnian',
+                    'bg': 'Bulgarian',
+                    'ca': 'Catalan',
+                    'zh': 'Chinese',
+                    'hr': 'Croatian',
+                    'cs': 'Czech',
+                    'da': 'Danish',
                     'nl': 'Dutch',
-                    'sv': 'Swedish',
-                    'tr': 'Turkish'
+                    'en': 'English',
+                    'et': 'Estonian',
+                    'fi': 'Finnish',
+                    'fr': 'French',
+                    'gl': 'Galician',
+                    'de': 'German',
+                    'el': 'Greek',
+                    'gu': 'Gujarati',
+                    'he': 'Hebrew',
+                    'hi': 'Hindi',
+                    'hu': 'Hungarian',
+                    'id': 'Indonesian',
+                    'it': 'Italian',
+                    'ja': 'Japanese',
+                    'kn': 'Kannada',
+                    'kk': 'Kazakh',
+                    'ko': 'Korean',
+                    'lv': 'Latvian',
+                    'lt': 'Lithuanian',
+                    'mk': 'Macedonian',
+                    'ms': 'Malay',
+                    'ml': 'Malayalam',
+                    'mr': 'Marathi',
+                    'no': 'Norwegian',
+                    'fa': 'Persian',
+                    'pl': 'Polish',
+                    'pt': 'Portuguese',
+                    'pa': 'Punjabi',
+                    'ro': 'Romanian',
+                    'ru': 'Russian',
+                    'sr': 'Serbian',
+                    'sk': 'Slovak',
+                    'sl': 'Slovenian',
+                    'es': 'Spanish',
+                    'sw': 'Swahili',
+                    'tl': 'Tagalog',
+                    'ta': 'Tamil',
+                    'te': 'Telugu',
+                    'th': 'Thai',
+                    'tr': 'Turkish',
+                    'uk': 'Ukrainian',
+                    'ur': 'Urdu',
+                    'vi': 'Vietnamese',
+                    'cy': 'Welsh'
                 }
                 language_name = language_names.get(language, language)
                 system_prompt = f"""You are Babs, a friendly and witty AI assistant with a good sense of humor. Always respond in {language_name}. You're helpful but not overly eager - sometimes a little sass or a joke is more appropriate than a lengthy explanation. Keep responses conversational in {language_name} and don't be afraid to be a bit cheeky when the moment calls for it."""
@@ -481,9 +586,14 @@ async def websocket_chat(websocket: WebSocket):
                         })
                 
                 # Get final response with function results (streaming)
+                # Re-create messages with system prompt for language consistency
+                final_messages = [
+                    {"role": "system", "content": system_prompt},
+                    *conversation_history[1:]  # Skip the old system message if any
+                ]
                 final_response = openai.chat.completions.create(
                     model="gpt-4o-mini",
-                    messages=conversation_history,  # Use full conversation history
+                    messages=final_messages,
                     max_tokens=1000,
                     temperature=0.7,
                     stream=True
