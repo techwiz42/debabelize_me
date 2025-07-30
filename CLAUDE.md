@@ -1,11 +1,43 @@
 # CLAUDE.md - Project Context for Claude Code
 
+## Claude Configuration
+**IMPORTANT**: Always use TodoWrite to track tasks throughout all sessions. This helps maintain context and progress visibility.
+
 ## Project Overview
 Debabelize Me is a voice-enabled chat application that leverages the **debabelizer module** for all speech-to-text (STT) and text-to-speech (TTS) functionality. The debabelizer module provides a unified, provider-agnostic interface for voice services. The app features a React/Next.js frontend and a FastAPI backend.
 
 **Important**: All STT and TTS functionality is accessed through the debabelizer module - we do not directly integrate with providers like Deepgram or ElevenLabs. See the debabelizer documentation at `~/debabelizer/README.md` for detailed information about the module's capabilities and configuration.
 
-**Current Status**: TTS is fully functional, while STT implementation is still in progress.
+**Current Status**: TTS is fully functional. STT has been implemented using a "fake streaming" approach that is more reliable than true WebSocket streaming:
+
+1. **Phase 1 (2025-07-30a)**: Fixed WebSocket connection errors by resolving parameter conflicts in debabelizer library calls
+2. **Phase 2 (2025-07-30b)**: Fixed speech detection by properly configuring audio format handling for WebM/Opus streams from browsers  
+3. **Phase 3 (2025-07-30c)**: Implemented "fake streaming" approach using audio buffering and Deepgram's file API instead of true streaming, based on proven Thanotopolis implementation
+4. **Phase 4 (2025-07-30d)**: Switched to Thanotopolis-style PCM streaming approach to fix WebM container format issues
+
+   **Root Cause**: WebM chunks from `MediaRecorder.ondataavailable` are incomplete fragments that cannot be processed as valid WebM files by Deepgram's API, causing "corrupt or unsupported data" errors.
+   
+   **Solution**: Adopted Thanotopolis implementation pattern:
+   - **Frontend**: Use Web Audio API (`ScriptProcessorNode`) instead of `MediaRecorder`
+   - **Audio Processing**: Convert Float32 → Int16 PCM with 50% signal boost and activity detection
+   - **Format**: Send raw PCM data (16kHz, mono) instead of WebM chunks
+   - **Backend**: Process PCM data with `audio_format="pcm"` instead of `"webm"`
+   
+   **Benefits**: Eliminates container format issues, provides better audio quality control, and matches proven working implementation.
+
+5. **Phase 5 (2025-07-30e)**: Fixed WebSocket disconnection after message send
+
+   **Root Cause**: After sending a chat message, the WebSocket connection would close and subsequent speech input would be ignored because the audio processor returned early when detecting a closed WebSocket.
+   
+   **Solution**: Implemented automatic WebSocket reconnection in audio processor:
+   - **Detection**: Audio processor checks WebSocket state before sending data
+   - **Reconnection**: When WebSocket is closed but audio input is detected, automatically creates new WebSocket connection
+   - **Handler Preservation**: New WebSocket inherits all event handlers from the original connection
+   - **Seamless Operation**: Speech transcription continues working after sending messages
+   
+   **Technical Details**: Changed `const ws` to `let ws` to allow reassignment during reconnection, added reconnection logic in `onaudioprocess` handler.
+   
+   **Benefits**: Continuous speech transcription functionality regardless of chat message sending, improved user experience with persistent voice input.
 
 ## Architecture
 
@@ -56,6 +88,23 @@ ELEVENLABS_OUTPUT_FORMAT=mp3_44100_128
 - Uses `/tts` endpoint to synthesize speech
 - Plays audio automatically when enabled
 
+### STT Streaming Technical Details (PCM Streaming Approach)
+- **Frontend**: Web Audio API (`ScriptProcessorNode`) processes audio in real-time
+- **Audio Processing**: 
+  - **Sample Rate**: 16kHz (optimized for speech recognition)
+  - **Format**: Int16 PCM with mono channel
+  - **Signal Boost**: 50% amplification for better recognition
+  - **Activity Detection**: Dynamic thresholds (0.001-0.003) to detect speech
+  - **Chunk Size**: 512 samples per audio frame (~32ms at 16kHz)
+- **Backend Processing**: 
+  - **Fake Streaming**: Uses audio buffering with PCM data instead of WebM containers
+  - **Buffer Configuration**: 0.5-2 second audio buffers optimized for PCM format
+  - **Transcription Method**: Uses Deepgram's file API (`transcribe_chunk`) with raw PCM data
+  - **Processing Flow**: PCM Buffer → File API call → Final transcription result
+  - **Format**: `audio_format="pcm"`, `sample_rate=16000`, `channels=1`
+- **Result Flow**: Buffered PCM chunks processed as complete transcriptions, final results sent as chat messages
+- **Advantages**: Eliminates WebM container issues, better audio quality control, proven reliability
+
 ### Debabelizing
 - Text → TTS → Audio → STT pipeline
 - Helps identify pronunciation/transcription issues
@@ -78,11 +127,12 @@ npm run build  # Production build
 
 ## Important Notes
 
-1. **No Localhost Fallbacks**: All URLs must come from environment variables
-2. **Provider Agnostic**: Code should not hardcode specific STT/TTS providers
-3. **Environment-Based Config**: All provider configuration lives in .env files
-4. **WebSocket Streaming**: STT uses WebSocket for real-time transcription
-5. **Audio Format**: Browser typically sends webm format for recording
+1. **CRITICAL: NO LOCALHOST TESTING**: NEVER test localhost endpoints during debugging - servers are not running on localhost during development sessions. Always verify services are running before attempting HTTP requests.
+2. **No Localhost Fallbacks**: All URLs must come from environment variables
+3. **Provider Agnostic**: Code should not hardcode specific STT/TTS providers
+4. **Environment-Based Config**: All provider configuration lives in .env files
+5. **WebSocket Streaming**: STT uses WebSocket for real-time transcription
+6. **Audio Format**: Browser typically sends webm format for recording
 
 ## Common Issues & Solutions
 
@@ -90,6 +140,34 @@ npm run build  # Production build
 2. **WebSocket Connection**: Check NEXT_PUBLIC_WS_URL is correctly configured
 3. **Audio Permissions**: Browser requires user permission for microphone access
 4. **CORS**: Backend configured to accept requests from frontend domains
+5. **STT WebSocket Connection Issues (Phase 1)**: Fixed 2025-07-30a - caused by passing `channels=1` parameter directly to `start_streaming_transcription()` when debabelizer already extracts it from kwargs, causing parameter conflict. Solution: Remove explicit `channels` parameter in `/ws/stt` endpoint.
+
+6. **STT Speech Detection Issues (Phase 2)**: Fixed 2025-07-30b - WebSocket connected successfully but no speech was detected. Root cause analysis revealed:
+   - **Problem**: Browser sends WebM/Opus audio chunks, but Deepgram streaming wasn't properly configured for this format
+   - **Frontend**: MediaRecorder captures audio in WebM container with Opus codec, sent as 100ms chunks over WebSocket
+   - **Backend Issue**: Was trying generic `webm` format without proper streaming parameters
+   - **Solution**: Configure Deepgram streaming with specific WebM/Opus parameters:
+     - `audio_format="webm"` with `encoding="opus"`
+     - `sample_rate=48000` (WebM standard)
+     - `vad_events=True` for voice activity detection
+     - `interim_results=True` for real-time feedback
+     - Multiple fallback configurations for robustness
+   - **Result Processing**: Enhanced to handle both interim and final results, with proper error handling and logging
+
+7. **STT Streaming Reliability Issues (Phase 3)**: Fixed 2025-07-30c - True Deepgram WebSocket streaming proved complex and unreliable. Solution: Implemented "fake streaming" approach:
+   - **Problem**: WebSocket streaming to Deepgram has connection management complexity, interim result handling issues, and unpredictable behavior
+   - **Solution**: Adopted Thanotopolis's proven approach using audio buffering + Deepgram file API
+   - **Implementation**: Buffer 0.5-2 seconds of audio, then send to `transcribe_chunk()` method using file API
+   - **Benefits**: More reliable, simpler error handling, better debugging, consistent results
+   - **Trade-off**: Slightly higher latency (0.5-2s) but much more stable transcription
+
+8. **WebSocket Disconnection After Message Send (Phase 5)**: Fixed 2025-07-30e - WebSocket connection closed after sending chat messages, breaking subsequent speech transcription:
+   - **Problem**: After sending a message, WebSocket would close and audio processor would return early when detecting closed connection
+   - **Root Cause**: Chat message sending process somehow closes the STT WebSocket connection
+   - **Solution**: Automatic WebSocket reconnection in audio processor when audio input is detected but connection is closed
+   - **Implementation**: Modified `onaudioprocess` handler to detect closed WebSocket, create new connection, preserve event handlers, and continue processing
+   - **Technical Fix**: Changed `const ws` to `let ws` in ChatInterface.tsx to allow reassignment during reconnection
+   - **Result**: Continuous speech transcription functionality even after sending multiple chat messages
 
 ## Testing Voice Features
 

@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import MessageItem from './MessageItem';
-import MessageInput from './MessageInput';
+import MessageInput, { MessageInputHandle } from './MessageInput';
 import { apiService } from '../services/api';
 
 interface Message {
@@ -85,6 +85,8 @@ export default function ChatInterface() {
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const wsRef = useRef<WebSocket | null>(null);
+  const messageInputRef = useRef<MessageInputHandle>(null);
+  const keepAliveIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -93,6 +95,13 @@ export default function ChatInterface() {
   useEffect(() => {
     scrollToBottom();
   }, [messages]);
+
+  useEffect(() => {
+    // Focus input when loading completes and mic is active
+    if (!isLoading && isRecording) {
+      messageInputRef.current?.focus();
+    }
+  }, [isLoading, isRecording]);
 
   const handleSendMessage = async (content: string) => {
     const userMessage: Message = {
@@ -156,29 +165,214 @@ export default function ChatInterface() {
 
   const toggleRecording = async () => {
     if (!isRecording) {
-      // Start recording
+      // Start recording using Thanotopolis-style PCM streaming
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        const mediaRecorder = new MediaRecorder(stream);
-        mediaRecorderRef.current = mediaRecorder;
-        audioChunksRef.current = [];
+        const stream = await navigator.mediaDevices.getUserMedia({ 
+          audio: {
+            channelCount: 1,
+            sampleRate: 16000,       // Match backend sample rate
+            echoCancellation: true,  // Keep for clean audio
+            noiseSuppression: false, // Disable to preserve speech nuances
+            autoGainControl: false,  // Disable to maintain consistent levels
+            // Advanced constraints for optimal speech recognition
+            advanced: [
+              { echoCancellation: { exact: true } },
+              { noiseSuppression: { exact: false } },
+              { autoGainControl: { exact: false } }
+            ]
+          }
+        });
+        
+        console.log('Got media stream:', stream);
+        const audioTrack = stream.getAudioTracks()[0];
+        console.log('Audio track settings:', audioTrack.getSettings());
 
         // Connect to WebSocket for streaming STT
         const wsUrl = process.env.NEXT_PUBLIC_WS_URL;
-        const ws = new WebSocket(`${wsUrl}/ws/stt`);
+        let ws = new WebSocket(`${wsUrl}/ws/stt`);
         wsRef.current = ws;
 
+        // Set up Web Audio API for PCM processing
+        const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+        
+        // Create a new MediaStream with the same tracks to ensure compatibility
+        const newStream = new MediaStream([audioTrack]);
+        
+        // Create audio nodes
+        const source = audioContext.createMediaStreamSource(newStream);
+        // Use smaller buffer size for lower latency
+        const processor = audioContext.createScriptProcessor(256, 1, 1);  // Even smaller for faster response
+
+        let isFirstAudioFrame = true;
+        let recentAudioFramesWithActivity = 0;
+        const RECENT_AUDIO_THRESHOLD = 2; // Reduced threshold for faster processing
+
+        // Calculate resampling ratio
+        const sourceSampleRate = audioContext.sampleRate;
+        const targetSampleRate = 16000;
+        const resampleRatio = targetSampleRate / sourceSampleRate;
+        
+        processor.onaudioprocess = (event) => {
+          // If WebSocket is closed, try to reconnect when we have audio input
+          if (ws.readyState !== WebSocket.OPEN) {
+            console.log('WebSocket is closed, attempting to reconnect...');
+            const wsUrl = process.env.NEXT_PUBLIC_WS_URL;
+            const newWs = new WebSocket(`${wsUrl}/ws/stt`);
+            wsRef.current = newWs;
+            
+            // Copy the same event handlers to the new WebSocket
+            newWs.onopen = ws.onopen;
+            newWs.onmessage = ws.onmessage;
+            newWs.onerror = ws.onerror;
+            newWs.onclose = ws.onclose;
+            
+            // Update the ws reference for this processor
+            ws = newWs;
+            (ws as any).audioContext = audioContext;
+            (ws as any).processor = processor;
+            (ws as any).source = source;
+            (ws as any).stream = newStream;
+            (ws as any).originalStream = stream;
+            
+            // Don't process audio until the new connection is established
+            return;
+          }
+
+          const inputData = event.inputBuffer.getChannelData(0);
+          
+          // Check if there's actual audio with improved sensitivity
+          let hasAudio = false;
+          let maxAmplitude = 0;
+          let avgAmplitude = 0;
+          let nonZeroSamples = 0;
+          
+          for (let i = 0; i < inputData.length; i++) {
+            const amplitude = Math.abs(inputData[i]);
+            maxAmplitude = Math.max(maxAmplitude, amplitude);
+            avgAmplitude += amplitude;
+            if (amplitude > 0.001) { // More sensitive threshold
+              nonZeroSamples++;
+            }
+            if (amplitude > 0.003) { // Lower threshold for detection
+              hasAudio = true;
+            }
+          }
+          
+          avgAmplitude /= inputData.length;
+          
+          // Enhanced detection: also consider if we have enough non-zero samples
+          if (!hasAudio && nonZeroSamples > inputData.length * 0.1) {
+            hasAudio = avgAmplitude > 0.0015; // Backup detection for quiet speech
+          }
+          
+          // Update recent activity tracker
+          if (hasAudio) {
+            recentAudioFramesWithActivity = RECENT_AUDIO_THRESHOLD;
+          } else {
+            recentAudioFramesWithActivity = Math.max(0, recentAudioFramesWithActivity - 1);
+          }
+          
+          // Process if we have audio or recent audio activity
+          if (!hasAudio && recentAudioFramesWithActivity === 0 && !isFirstAudioFrame) {
+            return; // Skip silence frames after initial frame
+          }
+          
+          // Resample to 16kHz if needed
+          let resampledData;
+          if (sourceSampleRate !== targetSampleRate) {
+            const targetLength = Math.floor(inputData.length * resampleRatio);
+            resampledData = new Float32Array(targetLength);
+            
+            // Simple linear interpolation resampling
+            for (let i = 0; i < targetLength; i++) {
+              const srcIndex = i / resampleRatio;
+              const srcIndexFloor = Math.floor(srcIndex);
+              const srcIndexCeil = Math.ceil(srcIndex);
+              
+              if (srcIndexCeil >= inputData.length) {
+                resampledData[i] = inputData[inputData.length - 1];
+              } else {
+                const fraction = srcIndex - srcIndexFloor;
+                resampledData[i] = inputData[srcIndexFloor] * (1 - fraction) + inputData[srcIndexCeil] * fraction;
+              }
+            }
+          } else {
+            resampledData = inputData;
+          }
+          
+          // Convert Float32 to Int16 PCM with optimized processing
+          const pcmData = new Int16Array(resampledData.length);
+          
+          // Apply dynamic gain based on audio level
+          const gain = maxAmplitude < 0.1 ? 2.0 : (maxAmplitude < 0.3 ? 1.5 : 1.2);
+          
+          for (let i = 0; i < resampledData.length; i++) {
+            // Apply dynamic gain for better recognition
+            const boostedSample = resampledData[i] * gain;
+            const clampedSample = Math.max(-1, Math.min(1, boostedSample));
+            // Convert to 16-bit signed integer
+            pcmData[i] = clampedSample < 0 ? clampedSample * 0x8000 : clampedSample * 0x7FFF;
+          }
+
+          // Debug audio levels when we have significant audio
+          // Commented out to reduce console spam
+          // if (hasAudio) {
+          //   const maxAmplitude = Math.max(...Array.from(pcmData).map(Math.abs));
+          //   console.log(`Sending audio - amplitude: ${maxAmplitude}, frames with activity: ${recentAudioFramesWithActivity}`);
+          // }
+          
+          // Send PCM data to backend
+          ws.send(pcmData.buffer);
+          isFirstAudioFrame = false;
+        };
+
+        source.connect(processor);
+        processor.connect(audioContext.destination);
+
+        // Store references for cleanup
+        (ws as any).audioContext = audioContext;
+        (ws as any).processor = processor;
+        (ws as any).source = source;
+        (ws as any).stream = newStream;
+        (ws as any).originalStream = stream;
+
         ws.onopen = () => {
-          console.log('WebSocket connected for STT');
+          console.log('WebSocket connected for STT - PCM streaming mode');
+          setIsRecording(true);
+          
+          // Focus the message input when recording starts (if not loading)
+          if (!isLoading) {
+            messageInputRef.current?.focus();
+          }
+          
+          // Set up keepalive ping every 30 seconds to prevent timeout
+          keepAliveIntervalRef.current = setInterval(() => {
+            if (ws.readyState === WebSocket.OPEN) {
+              // Send empty buffer as keepalive
+              ws.send(new ArrayBuffer(0));
+            }
+          }, 30000);
         };
 
         ws.onmessage = (event) => {
+          console.log('Raw WebSocket message received:', event.data, 'isLoading:', isLoading);
           const data = JSON.parse(event.data);
+          console.log('Parsed WebSocket data:', data);
           if (data.error) {
             console.error('STT error:', data.error);
-          } else if (data.is_final && data.text) {
-            // Send the final transcribed text as a message
-            handleSendMessage(data.text);
+          } else if (data.text) {
+            console.log(`STT result: "${data.text}" (final: ${data.is_final}), isLoading: ${isLoading}`);
+            if (data.is_final) {
+              // Accumulate transcribed text in the message input instead of auto-sending
+              messageInputRef.current?.appendValue(data.text);
+              
+              // Continue recording for next utterance
+              console.log('Continuing to record for next utterance...');
+              
+              // Always focus input after transcription, regardless of loading state
+              messageInputRef.current?.focus();
+            }
+            // For interim results, we could show them in the UI but not send as messages
           }
         };
 
@@ -186,31 +380,46 @@ export default function ChatInterface() {
           console.error('WebSocket error:', error);
         };
 
-        mediaRecorder.ondataavailable = (event) => {
-          if (event.data.size > 0) {
-            audioChunksRef.current.push(event.data);
-            // Send audio data to WebSocket
-            if (ws.readyState === WebSocket.OPEN) {
-              ws.send(event.data);
-            }
-          }
+        ws.onclose = (event) => {
+          console.log('WebSocket closed:', event.code, event.reason);
         };
 
-        mediaRecorder.start(100); // Send data every 100ms
-        setIsRecording(true);
       } catch (error) {
         console.error('Error starting recording:', error);
         alert('Unable to access microphone. Please check permissions.');
       }
     } else {
-      // Stop recording
-      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-        mediaRecorderRef.current.stop();
-        mediaRecorderRef.current.stream.getTracks().forEach(track => track.stop());
-      }
-      
-      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-        wsRef.current.close();
+      // Stop recording - cleanup Web Audio API components
+      if (wsRef.current) {
+        const ws = wsRef.current as any;
+        
+        // Clear keepalive interval
+        if (keepAliveIntervalRef.current) {
+          clearInterval(keepAliveIntervalRef.current);
+          keepAliveIntervalRef.current = null;
+        }
+        
+        // Clean up Web Audio API components
+        if (ws.processor) {
+          ws.processor.disconnect();
+        }
+        if (ws.source) {
+          ws.source.disconnect();
+        }
+        if (ws.audioContext && ws.audioContext.state !== 'closed') {
+          ws.audioContext.close();
+        }
+        if (ws.stream) {
+          ws.stream.getTracks().forEach((track: MediaStreamTrack) => track.stop());
+        }
+        if (ws.originalStream) {
+          ws.originalStream.getTracks().forEach((track: MediaStreamTrack) => track.stop());
+        }
+        
+        // Close WebSocket
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.close();
+        }
       }
       
       setIsRecording(false);
@@ -307,7 +516,7 @@ export default function ChatInterface() {
       </div>
 
       <div className="input-container">
-        <MessageInput onSendMessage={handleSendMessage} disabled={isLoading} />
+        <MessageInput ref={messageInputRef} onSendMessage={handleSendMessage} disabled={isLoading} />
       </div>
     </div>
   );

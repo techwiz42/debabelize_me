@@ -1,12 +1,32 @@
-import { useState, FormEvent } from 'react';
+import { useState, FormEvent, forwardRef, useImperativeHandle, useRef } from 'react';
 
 interface MessageInputProps {
   onSendMessage: (message: string) => void;
   disabled?: boolean;
 }
 
-export default function MessageInput({ onSendMessage, disabled = false }: MessageInputProps) {
-  const [message, setMessage] = useState('');
+export interface MessageInputHandle {
+  focus: () => void;
+  setValue: (value: string) => void;
+  appendValue: (value: string) => void;
+}
+
+const MessageInput = forwardRef<MessageInputHandle, MessageInputProps>(
+  ({ onSendMessage, disabled = false }, ref) => {
+    const [message, setMessage] = useState('');
+    const inputRef = useRef<HTMLInputElement>(null);
+
+    useImperativeHandle(ref, () => ({
+      focus: () => {
+        inputRef.current?.focus();
+      },
+      setValue: (value: string) => {
+        setMessage(value);
+      },
+      appendValue: (value: string) => {
+        setMessage(prev => prev ? `${prev} ${value}` : value);
+      }
+    }));
 
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault();
@@ -20,6 +40,7 @@ export default function MessageInput({ onSendMessage, disabled = false }: Messag
     <form onSubmit={handleSubmit} className="message-input-form">
       <div className="input-container">
         <input
+          ref={inputRef}
           type="text"
           value={message}
           onChange={(e) => setMessage(e.target.value)}
@@ -37,4 +58,8 @@ export default function MessageInput({ onSendMessage, disabled = false }: Messag
       </div>
     </form>
   );
-}
+});
+
+MessageInput.displayName = 'MessageInput';
+
+export default MessageInput;
