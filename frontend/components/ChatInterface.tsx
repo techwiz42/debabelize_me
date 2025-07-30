@@ -81,12 +81,17 @@ export default function ChatInterface() {
   const [isLoading, setIsLoading] = useState(false);
   const [selectedLanguage, setSelectedLanguage] = useState('auto');
   const [sessionId, setSessionId] = useState<string | null>(null);
+  const [wasRecordingBeforeReply, setWasRecordingBeforeReply] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const wsRef = useRef<WebSocket | null>(null);
   const messageInputRef = useRef<MessageInputHandle>(null);
   const keepAliveIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const isWebSocketReady = useRef<boolean>(false);
+  const reconnectAttempts = useRef<number>(0);
+  const maxReconnectAttempts = 3;
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -103,6 +108,28 @@ export default function ChatInterface() {
     }
   }, [isLoading, isRecording]);
 
+  // Pre-establish WebSocket connection and AudioContext for faster first utterance
+  useEffect(() => {
+    const preEstablishConnection = async () => {
+      // Pre-create AudioContext (must be done after user interaction)
+      if (!audioContextRef.current) {
+        try {
+          audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
+          // Suspend immediately - will resume when recording starts
+          if (audioContextRef.current.state === 'running') {
+            await audioContextRef.current.suspend();
+          }
+        } catch (error) {
+          console.warn('Could not pre-create AudioContext:', error);
+        }
+      }
+    };
+
+    // Pre-establish connection after a short delay to avoid immediate startup overhead
+    const timer = setTimeout(preEstablishConnection, 1000);
+    return () => clearTimeout(timer);
+  }, []);
+
   const handleSendMessage = async (content: string) => {
     const userMessage: Message = {
       id: Date.now().toString(),
@@ -110,6 +137,9 @@ export default function ChatInterface() {
       sender: 'user',
       timestamp: new Date(),
     };
+    
+    // Remember if we were recording before sending message
+    setWasRecordingBeforeReply(isRecording);
     
     setMessages(prev => [...prev, userMessage]);
     setIsLoading(true);
@@ -139,9 +169,21 @@ export default function ChatInterface() {
           const audio = new Audio(audioUrl);
           audio.play();
           
-          // Clean up URL after audio finishes
+          // Clean up URL after audio finishes and restart recording if needed
           audio.addEventListener('ended', () => {
             URL.revokeObjectURL(audioUrl);
+            
+            // Restart recording if it was active before the reply and focus input
+            if (wasRecordingBeforeReply && !isRecording) {
+              setTimeout(() => {
+                toggleRecording();
+                setWasRecordingBeforeReply(false);
+                messageInputRef.current?.focus();
+              }, 100); // Small delay to ensure audio cleanup
+            } else {
+              // Always focus input after audio playback
+              messageInputRef.current?.focus();
+            }
           });
         } catch (error) {
           console.error('Error playing audio:', error);
@@ -160,6 +202,18 @@ export default function ChatInterface() {
       setMessages(prev => [...prev, errorMessage]);
     } finally {
       setIsLoading(false);
+      
+      // If playback is disabled, restart recording immediately after loading and focus input
+      if (!isPlaybackEnabled && wasRecordingBeforeReply && !isRecording) {
+        setTimeout(() => {
+          toggleRecording();
+          setWasRecordingBeforeReply(false);
+          messageInputRef.current?.focus();
+        }, 100);
+      } else {
+        // Always focus input after loading completes
+        messageInputRef.current?.focus();
+      }
     }
   };
 
@@ -192,16 +246,25 @@ export default function ChatInterface() {
         let ws = new WebSocket(`${wsUrl}/ws/stt`);
         wsRef.current = ws;
 
-        // Set up Web Audio API for PCM processing
-        const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+        // Use pre-created AudioContext or create new one for PCM processing
+        let audioContext = audioContextRef.current;
+        if (!audioContext || audioContext.state === 'closed') {
+          audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+          audioContextRef.current = audioContext;
+        }
+        
+        // Resume if suspended
+        if (audioContext.state === 'suspended') {
+          await audioContext.resume();
+        }
         
         // Create a new MediaStream with the same tracks to ensure compatibility
         const newStream = new MediaStream([audioTrack]);
         
         // Create audio nodes
         const source = audioContext.createMediaStreamSource(newStream);
-        // Use smaller buffer size for lower latency
-        const processor = audioContext.createScriptProcessor(256, 1, 1);  // Even smaller for faster response
+        // Use smallest buffer size for lowest latency
+        const processor = audioContext.createScriptProcessor(256, 1, 1);  // 256 samples = ~16ms at 16kHz
 
         let isFirstAudioFrame = true;
         let recentAudioFramesWithActivity = 0;
@@ -213,26 +276,35 @@ export default function ChatInterface() {
         const resampleRatio = targetSampleRate / sourceSampleRate;
         
         processor.onaudioprocess = (event) => {
-          // If WebSocket is closed, try to reconnect when we have audio input
+          // If WebSocket is closed, try to reconnect when we have audio input (with limits)
           if (ws.readyState !== WebSocket.OPEN) {
-            console.log('WebSocket is closed, attempting to reconnect...');
-            const wsUrl = process.env.NEXT_PUBLIC_WS_URL;
-            const newWs = new WebSocket(`${wsUrl}/ws/stt`);
-            wsRef.current = newWs;
-            
-            // Copy the same event handlers to the new WebSocket
-            newWs.onopen = ws.onopen;
-            newWs.onmessage = ws.onmessage;
-            newWs.onerror = ws.onerror;
-            newWs.onclose = ws.onclose;
-            
-            // Update the ws reference for this processor
-            ws = newWs;
-            (ws as any).audioContext = audioContext;
-            (ws as any).processor = processor;
-            (ws as any).source = source;
-            (ws as any).stream = newStream;
-            (ws as any).originalStream = stream;
+            if (reconnectAttempts.current < maxReconnectAttempts) {
+              console.log(`WebSocket is closed, attempting to reconnect... (${reconnectAttempts.current + 1}/${maxReconnectAttempts})`);
+              reconnectAttempts.current++;
+              
+              const wsUrl = process.env.NEXT_PUBLIC_WS_URL;
+              const newWs = new WebSocket(`${wsUrl}/ws/stt`);
+              wsRef.current = newWs;
+              
+              // Copy the same event handlers to the new WebSocket
+              newWs.onopen = ws.onopen;
+              newWs.onmessage = ws.onmessage;
+              newWs.onerror = ws.onerror;
+              newWs.onclose = ws.onclose;
+              
+              // Update the ws reference for this processor
+              ws = newWs;
+              (ws as any).audioContext = audioContext;
+              (ws as any).processor = processor;
+              (ws as any).source = source;
+              (ws as any).stream = newStream;
+              (ws as any).originalStream = stream;
+            } else {
+              console.warn('Max WebSocket reconnection attempts reached, stopping recording');
+              // Stop recording when max attempts reached
+              setIsRecording(false);
+              return;
+            }
             
             // Don't process audio until the new connection is established
             return;
@@ -339,6 +411,7 @@ export default function ChatInterface() {
         ws.onopen = () => {
           console.log('WebSocket connected for STT - PCM streaming mode');
           setIsRecording(true);
+          reconnectAttempts.current = 0; // Reset reconnection counter on successful connection
           
           // Focus the message input when recording starts (if not loading)
           if (!isLoading) {

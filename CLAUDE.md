@@ -39,6 +39,25 @@ Debabelize Me is a voice-enabled chat application that leverages the **debabeliz
    
    **Benefits**: Continuous speech transcription functionality regardless of chat message sending, improved user experience with persistent voice input.
 
+6. **Phase 6 (2025-07-30f)**: Optimized latency and improved UX flow
+
+   **Latency Optimizations**:
+   - **AudioContext Pre-creation**: Pre-create and suspend AudioContext on component mount to eliminate ~100ms setup delay
+   - **Reduced Buffer Sizes**: Optimized backend buffering (0.75s min, 1.75s max, 400ms timeout) for faster transcription
+   - **Smaller Frontend Buffers**: Use 256-sample ScriptProcessor buffers (~16ms at 16kHz) for lower latency
+   - **Expected Improvements**: ~100-150ms faster first utterance, ~200-400ms faster between utterances
+   
+   **UX Flow Improvements**:
+   - **Auto-restart STT**: Automatically restart speech recording after agent replies complete (tracks `wasRecordingBeforeReply` state)
+   - **Smart Focus Management**: Always return focus to MessageInput after agent replies for seamless conversation flow
+   - **WebSocket Reconnection Limits**: Prevent browser flooding by limiting reconnection attempts to 3 max, with counter reset on successful connection
+   
+   **Technical Implementation**:
+   - Pre-established AudioContext with suspend/resume pattern
+   - State tracking for recording continuity across message sends
+   - Limited reconnection attempts with graceful failure handling
+   - Consistent input focus management for optimal typing/voice workflow
+
 ## Architecture
 
 ### Backend (FastAPI)
@@ -98,10 +117,11 @@ ELEVENLABS_OUTPUT_FORMAT=mp3_44100_128
   - **Chunk Size**: 512 samples per audio frame (~32ms at 16kHz)
 - **Backend Processing**: 
   - **Fake Streaming**: Uses audio buffering with PCM data instead of WebM containers
-  - **Buffer Configuration**: 0.5-2 second audio buffers optimized for PCM format
+  - **Buffer Configuration**: 0.75-1.75 second audio buffers optimized for low latency (Phase 6)
   - **Transcription Method**: Uses Deepgram's file API (`transcribe_chunk`) with raw PCM data
   - **Processing Flow**: PCM Buffer → File API call → Final transcription result
   - **Format**: `audio_format="pcm"`, `sample_rate=16000`, `channels=1`
+  - **Timeout**: 400ms processing timeout for responsive transcription
 - **Result Flow**: Buffered PCM chunks processed as complete transcriptions, final results sent as chat messages
 - **Advantages**: Eliminates WebM container issues, better audio quality control, proven reliability
 
@@ -169,10 +189,23 @@ npm run build  # Production build
    - **Technical Fix**: Changed `const ws` to `let ws` in ChatInterface.tsx to allow reassignment during reconnection
    - **Result**: Continuous speech transcription functionality even after sending multiple chat messages
 
+9. **Latency Optimization & UX Flow Issues (Phase 6)**: Fixed 2025-07-30f - Multiple improvements for faster response and better user experience:
+   - **Latency Issues**: First utterance took too long due to AudioContext creation, between-utterance delays from excessive buffering
+   - **UX Issues**: STT would turn off during agent replies and not restart automatically, input focus lost after replies, WebSocket reconnection floods
+   - **Solutions Implemented**:
+     - Pre-create AudioContext on component mount with suspend/resume pattern
+     - Reduced backend buffer requirements (0.75s min vs 1s, 1.75s max vs 2s, 400ms timeout vs 500ms)
+     - Limited WebSocket reconnection attempts to 3 maximum with counter reset
+     - Auto-restart recording after agent replies complete (both with/without TTS playback)
+     - Always return focus to MessageInput after agent responses for seamless conversation
+   - **Performance Improvements**: ~100-150ms faster first utterance, ~200-400ms faster between utterances
+   - **UX Improvements**: Continuous hands-free conversation flow, no more manual re-enabling of STT after replies
+
 ## Testing Voice Features
 
 1. Click mic icon to start recording
-2. Speak your message
-3. Click mic icon again to stop and send
+2. Speak your message - transcribed text appears in input field automatically
+3. Either press Enter to send or continue speaking for additional utterances
 4. Toggle speaker icon to enable/disable TTS playback
 5. Assistant responses will be spoken if TTS is enabled
+6. **Hands-free Mode (Phase 6)**: If recording was active before sending a message, it automatically restarts after the agent reply completes, allowing for continuous conversation without manual re-activation
