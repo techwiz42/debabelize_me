@@ -23,7 +23,7 @@ async def handle_soniox_streaming(websocket: WebSocket):
         # Start Soniox streaming session using correct method name
         try:
             print("Attempting to start Soniox streaming...")
-            stt_session_id = await voice_service.stt_processor.start_streaming(
+            stt_session_id = await voice_service.stt_processor.start_streaming_transcription(
                 audio_format="pcm",      # PCM format from frontend
                 sample_rate=16000,       # 16kHz from frontend  
                 language="en",           # Primary language
@@ -120,7 +120,7 @@ async def handle_soniox_streaming(websocket: WebSocket):
         if stt_session_id:
             try:
                 print(f"Stopping Soniox streaming session: {stt_session_id}")
-                await voice_service.stt_processor.stop_streaming(stt_session_id)
+                await voice_service.stt_processor.stop_streaming_transcription(stt_session_id)
             except Exception as cleanup_error:
                 print(f"Error stopping Soniox streaming session: {cleanup_error}")
         

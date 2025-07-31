@@ -9,7 +9,7 @@ from app.models.schemas import (
 from app.services.voice_service import voice_service
 from app.services.chat_service import chat_service
 from app.services.session_service import session_service
-from app.utils.audio_processing import audio_buffer_manager, AUDIO_BUFFER_CONFIG
+from app.utils.audio_processing import AUDIO_BUFFER_CONFIG
 from app.websockets.stt_handler import handle_stt_websocket
 from app.middleware.security import SecurityMiddleware, RequestSizeLimit
 from app.core.security_config import security_settings
@@ -122,9 +122,8 @@ async def debug_stt():
         "stt_provider": settings.debabelizer_stt_provider,
         "api_key_present": bool(settings.deepgram_api_key),
         "api_key_preview": settings.deepgram_api_key[:10] + "..." if settings.deepgram_api_key else None,
-        "buffering_approach": "fake_streaming",
-        "active_buffering_sessions": audio_buffer_manager.get_session_count(),
-        "buffer_config": AUDIO_BUFFER_CONFIG
+        "streaming_approach": "true_websocket_streaming",
+        "streaming_provider": "deepgram"
     }
     
     if voice_service.stt_processor:
@@ -133,28 +132,28 @@ async def debug_stt():
             debug_info["processor_type"] = type(voice_service.stt_processor).__name__
             debug_info["processor_provider"] = getattr(voice_service.stt_processor, 'stt_provider', 'unknown')
             
-            # Try a simple test - test chunk transcription with silence
+            # Try a simple test - test transcription with silence
             try:
-                print("Attempting to test chunk transcription with test audio...")
-                # Create 1 second of silence as test audio (WebM format simulation)
-                test_audio = b'\x00' * 48000  # 1 second of silence at 48kHz 16-bit
+                print("Attempting to test transcription with test audio...")
+                # Create 1 second of silence as test audio
+                test_audio = b'\x00' * 32000  # 1 second of silence at 16kHz 16-bit
                 
-                result = await voice_service.stt_processor.transcribe_chunk(
+                result = await voice_service.stt_processor.transcribe_audio(
                     audio_data=test_audio,
-                    audio_format="webm",
-                    sample_rate=48000,
+                    audio_format="pcm",
+                    sample_rate=16000,
                     channels=1
                 )
-                debug_info["test_chunk_transcription"] = True
+                debug_info["test_transcription"] = True
                 debug_info["test_result_text"] = result.text
                 debug_info["test_result_confidence"] = result.confidence
                 debug_info["test_result_language"] = result.language_detected
                 
             except Exception as e:
-                debug_info["test_chunk_error"] = str(e)
-                debug_info["test_chunk_error_type"] = type(e).__name__
+                debug_info["test_transcription_error"] = str(e)
+                debug_info["test_transcription_error_type"] = type(e).__name__
                 import traceback
-                debug_info["test_chunk_traceback"] = traceback.format_exc()
+                debug_info["test_transcription_traceback"] = traceback.format_exc()
                 
         except Exception as e:
             debug_info["processor_error"] = str(e)
@@ -164,12 +163,8 @@ async def debug_stt():
 @app.on_event("shutdown")
 async def shutdown_event():
     """Clean up resources on shutdown"""
-    print("Shutting down - cleaning up active buffering sessions...")
-    
-    if audio_buffer_manager.get_session_count() > 0:
-        print(f"Cleaning up {audio_buffer_manager.get_session_count()} buffering sessions")
-        # Audio buffer manager will be cleaned up automatically
-    
+    print("Shutting down - cleaning up resources...")
+    # Voice service cleanup happens automatically
     print("Shutdown cleanup complete")
 
 if __name__ == "__main__":
