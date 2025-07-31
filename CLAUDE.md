@@ -58,6 +58,48 @@ Debabelize Me is a voice-enabled chat application that leverages the **debabeliz
    - Limited reconnection attempts with graceful failure handling
    - Consistent input focus management for optimal typing/voice workflow
 
+7. **Phase 7 (2025-07-30g)**: Backend modular refactoring and provider-specific streaming
+
+   **Backend Architecture Refactoring**:
+   - **Modular Structure**: Refactored monolithic 947-line `main.py` into focused 171-line file with separate service modules
+   - **Services Layer**: Created `app/services/voice_service.py` for centralized debabelizer management
+   - **WebSocket Layer**: Split WebSocket handling into provider-specific modules:
+     - `app/websockets/stt_handler.py` - Routes to provider-specific handlers with fallback
+     - `app/websockets/deepgram_handler.py` - Fake streaming (buffered) for Deepgram
+     - `app/websockets/soniox_handler.py` - Real streaming for Soniox
+   - **Configuration Layer**: Centralized settings management in `app/core/config.py`
+   
+   **Provider-Specific Streaming Implementation**:
+   - **Deepgram**: Maintains proven fake streaming approach with audio buffering and file API calls
+   - **Soniox**: Implements true real-time streaming with native WebSocket support
+   - **Routing Logic**: STT handler automatically routes to appropriate provider based on `DEBABELIZER_STT_PROVIDER`
+   - **Fallback Strategy**: If Soniox fails, gracefully falls back to Deepgram fake streaming
+   
+   **Benefits**:
+   - **Maintainability**: Clean separation of concerns, easier to debug and extend
+   - **Provider Optimization**: Each provider uses its optimal streaming approach
+   - **Reliability**: Built-in fallback mechanisms prevent total STT failure
+   - **Scalability**: Easy to add new providers or modify existing ones
+
+8. **Phase 8 (2025-07-30h)**: Soniox streaming implementation and debugging
+
+   **Soniox Integration**:
+   - **Provider Configuration**: Added Soniox as primary STT provider (`DEBABELIZER_STT_PROVIDER=soniox`)
+   - **Method Name Fixes**: Corrected Soniox method names:
+     - `start_streaming()` (not `start_streaming_transcription()`)
+     - `stream_audio()` ✅ (correct)
+     - `stop_streaming()` (not `stop_streaming_transcription()`)  
+     - `get_streaming_results()` ✅ (correct async generator)
+   - **Session Management**: Added `has_pending_audio=True` flag to prevent premature session closure
+   
+   **Debugging Process**:
+   - **Root Cause Analysis**: Soniox sessions were starting successfully but immediately closing with code 1000 (normal closure)
+   - **Method Investigation**: Research revealed incorrect method names were causing API errors
+   - **Activity Detection**: Soniox has sophisticated session management that closes connections when no activity is detected
+   - **Solution**: Fixed method names and added proper session activity flags
+   
+   **Current Status**: Soniox streaming handler updated with correct API calls and session management
+
 ## Architecture
 
 ### Backend (FastAPI)
@@ -85,14 +127,15 @@ The app uses provider-agnostic configuration via environment variables:
 # Backend .env
 DEEPGRAM_API_KEY=<key>
 ELEVENLABS_API_KEY=<key>
-DEBABELIZER_STT_PROVIDER=deepgram
+SONIOX_API_KEY=<key>
+DEBABELIZER_STT_PROVIDER=soniox
 DEBABELIZER_TTS_PROVIDER=elevenlabs
 DEBABELIZER_OPTIMIZE_FOR=balanced
 ELEVENLABS_OUTPUT_FORMAT=mp3_44100_128
 ```
 
 ### Providers
-- **STT**: Deepgram (configurable via DEBABELIZER_STT_PROVIDER)
+- **STT**: Soniox (primary), Deepgram (fallback) - configurable via DEBABELIZER_STT_PROVIDER
 - **TTS**: ElevenLabs (configurable via DEBABELIZER_TTS_PROVIDER)
 
 ## Key Implementation Details
@@ -107,7 +150,7 @@ ELEVENLABS_OUTPUT_FORMAT=mp3_44100_128
 - Uses `/tts` endpoint to synthesize speech
 - Plays audio automatically when enabled
 
-### STT Streaming Technical Details (PCM Streaming Approach)
+### STT Streaming Technical Details (Provider-Specific Approaches)
 - **Frontend**: Web Audio API (`ScriptProcessorNode`) processes audio in real-time
 - **Audio Processing**: 
   - **Sample Rate**: 16kHz (optimized for speech recognition)
@@ -115,15 +158,19 @@ ELEVENLABS_OUTPUT_FORMAT=mp3_44100_128
   - **Signal Boost**: 50% amplification for better recognition
   - **Activity Detection**: Dynamic thresholds (0.001-0.003) to detect speech
   - **Chunk Size**: 512 samples per audio frame (~32ms at 16kHz)
-- **Backend Processing**: 
-  - **Fake Streaming**: Uses audio buffering with PCM data instead of WebM containers
-  - **Buffer Configuration**: 0.75-1.75 second audio buffers optimized for low latency (Phase 6)
-  - **Transcription Method**: Uses Deepgram's file API (`transcribe_chunk`) with raw PCM data
-  - **Processing Flow**: PCM Buffer → File API call → Final transcription result
-  - **Format**: `audio_format="pcm"`, `sample_rate=16000`, `channels=1`
-  - **Timeout**: 400ms processing timeout for responsive transcription
-- **Result Flow**: Buffered PCM chunks processed as complete transcriptions, final results sent as chat messages
-- **Advantages**: Eliminates WebM container issues, better audio quality control, proven reliability
+- **Backend Processing (Provider-Specific)**: 
+  - **Soniox (Real Streaming)**: True real-time streaming with native WebSocket support
+    - **Method**: Uses `start_streaming()`, `stream_audio()`, `get_streaming_results()` async generator
+    - **Processing Flow**: PCM chunks → Direct streaming → Real-time interim/final results
+    - **Session Management**: `has_pending_audio=True` to maintain active sessions
+    - **Format**: `audio_format="pcm"`, `sample_rate=16000`, `language="en"`
+  - **Deepgram (Fake Streaming)**: Audio buffering with file API calls (fallback)
+    - **Buffer Configuration**: 0.75-1.75 second audio buffers optimized for low latency
+    - **Transcription Method**: Uses Deepgram's file API (`transcribe_chunk`) with buffered PCM data
+    - **Processing Flow**: PCM Buffer → File API call → Final transcription result
+    - **Timeout**: 400ms processing timeout for responsive transcription
+- **Provider Routing**: STT handler automatically routes to optimal approach based on configured provider
+- **Advantages**: Each provider uses its optimal streaming method, with built-in fallback reliability
 
 ### Debabelizing
 - Text → TTS → Audio → STT pipeline
@@ -200,6 +247,17 @@ npm run build  # Production build
      - Always return focus to MessageInput after agent responses for seamless conversation
    - **Performance Improvements**: ~100-150ms faster first utterance, ~200-400ms faster between utterances
    - **UX Improvements**: Continuous hands-free conversation flow, no more manual re-enabling of STT after replies
+
+10. **Soniox Streaming Method Issues (Phase 8)**: Fixed 2025-07-30h - Soniox sessions starting but immediately closing with code 1000:
+   - **Problem**: Used incorrect method names `start_streaming_transcription()` and `stop_streaming_transcription()` instead of proper API methods
+   - **Root Cause**: Soniox STT provider uses different method names than assumed, causing API errors that triggered session closure
+   - **Method Corrections**:
+     - `start_streaming_transcription()` → `start_streaming()` ✅
+     - `stop_streaming_transcription()` → `stop_streaming()` ✅
+     - `stream_audio()` and `get_streaming_results()` were already correct
+   - **Session Management Fix**: Added `has_pending_audio=True` parameter to indicate ongoing audio stream and prevent premature session closure
+   - **Activity Detection**: Soniox has sophisticated session management that auto-closes inactive sessions - proper flags prevent this
+   - **Result**: Soniox streaming sessions now maintain proper lifecycle with correct API calls
 
 ## Testing Voice Features
 

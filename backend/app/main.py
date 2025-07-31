@@ -11,14 +11,20 @@ from app.services.chat_service import chat_service
 from app.services.session_service import session_service
 from app.utils.audio_processing import audio_buffer_manager, AUDIO_BUFFER_CONFIG
 from app.websockets.stt_handler import handle_stt_websocket
+from app.middleware.security import SecurityMiddleware, RequestSizeLimit
+from app.core.security_config import security_settings
 
 app = FastAPI()
 
+# Add security middleware
+app.add_middleware(SecurityMiddleware)
+app.add_middleware(RequestSizeLimit, max_size=10 * 1024 * 1024)  # 10MB limit
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.cors_origins,
+    allow_origins=security_settings.allowed_origins,
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST"],
     allow_headers=["*"],
     expose_headers=["*"],
 )
