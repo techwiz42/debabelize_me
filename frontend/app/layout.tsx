@@ -1,8 +1,9 @@
 import './globals.css'
+import { AuthProvider } from '../components/AuthProvider'
 
 export const metadata = {
-  title: 'Debabelize',
-  description: 'Provider-agnostic STT/TTS wrapper',
+  title: 'Debabelizer - Universal Voice Processing',
+  description: 'Breaking down language barriers with advanced speech-to-text and text-to-speech technology',
 }
 
 export default function RootLayout({
@@ -12,7 +13,11 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body>{children}</body>
+      <body>
+        <AuthProvider>
+          {children}
+        </AuthProvider>
+      </body>
     </html>
   )
 }

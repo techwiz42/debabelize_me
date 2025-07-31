@@ -13,8 +13,14 @@ from app.utils.audio_processing import AUDIO_BUFFER_CONFIG
 from app.websockets.stt_handler import handle_stt_websocket
 from app.middleware.security import SecurityMiddleware, RequestSizeLimit
 from app.core.security_config import security_settings
+from app.routes.auth import router as auth_router
+from app.database.database import Database
+from app.services.auth_service import auth_service
 
-app = FastAPI()
+app = FastAPI(title="Debabelizer API", description="Universal Voice Processing API")
+
+# Include authentication routes
+app.include_router(auth_router)
 
 # Add security middleware
 app.add_middleware(SecurityMiddleware)
@@ -31,8 +37,15 @@ app.add_middleware(
 
 @app.on_event("startup")
 async def startup_event():
-    """Initialize voice processors on startup"""
+    """Initialize voice processors and database on startup"""
+    # Initialize database
+    await Database.initialize()
+    
+    # Initialize voice processors
     await voice_service.initialize_processors()
+    
+    # Clean up expired tokens and sessions
+    await auth_service.cleanup_expired_data()
 
 @app.post("/stt", response_model=STTResponse)
 async def speech_to_text(audio: UploadFile = File(...)):

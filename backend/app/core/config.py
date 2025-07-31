@@ -35,6 +35,31 @@ class Settings(BaseSettings):
     debabelizer_optimize_for: str
     elevenlabs_output_format: str
     
+    # Authentication Settings
+    app_url: str = "https://debabelize.me"
+    session_duration_days: int = 30
+    confirmation_token_hours: int = 24
+    
+    # Email Settings
+    sendgrid_api_key: Optional[str] = None
+    from_email: str = "noreply@debabelize.me"
+    from_name: str = "Debabelizer"
+    
+    # SMTP Settings
+    smtp_server: str = "smtp.gmail.com"
+    smtp_port: int = 587
+    smtp_username: Optional[str] = None
+    smtp_password: Optional[str] = None
+    
+    # Gmail Settings (legacy)
+    gmail_sender_email: Optional[str] = None
+    gmail_address: Optional[str] = None
+    gmail_app_password: Optional[str] = None
+    
+    # Database Settings
+    database_url: Optional[str] = None
+    secret_key: Optional[str] = None
+    
     class Config:
         env_file = ".env"
         case_sensitive = False

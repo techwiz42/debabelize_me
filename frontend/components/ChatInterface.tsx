@@ -2,6 +2,8 @@ import { useState, useRef, useEffect } from 'react';
 import MessageItem from './MessageItem';
 import MessageInput, { MessageInputHandle } from './MessageInput';
 import { apiService } from '../services/api';
+import { useAuth } from './AuthProvider';
+import { useRouter } from 'next/navigation';
 
 interface Message {
   id: string;
@@ -75,6 +77,8 @@ const SUPPORTED_LANGUAGES = [
 ];
 
 export default function ChatInterface() {
+  const { user, logout } = useAuth();
+  const router = useRouter();
   const [messages, setMessages] = useState<Message[]>([]);
   const [isRecording, setIsRecording] = useState(false);
   const [isPlaybackEnabled, setIsPlaybackEnabled] = useState(true);
@@ -528,6 +532,15 @@ export default function ChatInterface() {
     }
   };
 
+  const handleLogout = async () => {
+    try {
+      await logout();
+      router.push('/auth');
+    } catch (error) {
+      console.error('Logout error:', error);
+    }
+  };
+
   return (
     <div className="chat-interface">
       <div className="chat-header">
@@ -535,39 +548,51 @@ export default function ChatInterface() {
           <h1>Debabelize</h1>
         </div>
         <div className="header-controls">
-          <select
-            className="language-selector"
-            value={selectedLanguage}
-            onChange={(e) => setSelectedLanguage(e.target.value)}
-            title="Select response language"
-          >
-            {SUPPORTED_LANGUAGES.map((lang) => (
-              <option key={lang.code} value={lang.code}>
-                {lang.name}
-              </option>
-            ))}
-          </select>
-          <div className="audio-controls">
-            <button
-              className={`audio-control-btn ${isRecording ? 'recording' : ''}`}
-              onClick={toggleRecording}
-              title={isRecording ? 'Stop Recording' : 'Start Recording'}
+          <div className="left-controls">
+            <select
+              className="language-selector"
+              value={selectedLanguage}
+              onChange={(e) => setSelectedLanguage(e.target.value)}
+              title="Select response language"
             >
-              {isRecording ? '🛑' : '🎤'}
-            </button>
+              {SUPPORTED_LANGUAGES.map((lang) => (
+                <option key={lang.code} value={lang.code}>
+                  {lang.name}
+                </option>
+              ))}
+            </select>
+            <div className="audio-controls">
+              <button
+                className={`audio-control-btn ${isRecording ? 'recording' : ''}`}
+                onClick={toggleRecording}
+                title={isRecording ? 'Stop Recording' : 'Start Recording'}
+              >
+                {isRecording ? '🛑' : '🎤'}
+              </button>
+              <button
+                className={`audio-control-btn ${isPlaybackEnabled ? 'enabled' : 'disabled'}`}
+                onClick={togglePlayback}
+                title={isPlaybackEnabled ? 'Disable Audio Output' : 'Enable Audio Output'}
+              >
+                {isPlaybackEnabled ? '🔊' : '🔇'}
+              </button>
+              <button
+                className="audio-control-btn new-chat-btn"
+                onClick={clearConversation}
+                title="Start New Conversation"
+              >
+                🆕
+              </button>
+            </div>
+          </div>
+          <div className="user-section">
+            <span className="welcome-text">Welcome, {user?.email}</span>
             <button
-              className={`audio-control-btn ${isPlaybackEnabled ? 'enabled' : 'disabled'}`}
-              onClick={togglePlayback}
-              title={isPlaybackEnabled ? 'Disable Audio Output' : 'Enable Audio Output'}
+              className="logout-btn"
+              onClick={handleLogout}
+              title="Logout"
             >
-              {isPlaybackEnabled ? '🔊' : '🔇'}
-            </button>
-            <button
-              className="audio-control-btn new-chat-btn"
-              onClick={clearConversation}
-              title="Start New Conversation"
-            >
-              🆕
+              Logout
             </button>
           </div>
         </div>
