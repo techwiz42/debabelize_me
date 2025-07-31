@@ -96,6 +96,8 @@ export default function ChatInterface() {
   const isWebSocketReady = useRef<boolean>(false);
   const reconnectAttempts = useRef<number>(0);
   const maxReconnectAttempts = 3;
+  const currentUtteranceRef = useRef<string>('');
+  const utteranceTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -305,8 +307,10 @@ export default function ChatInterface() {
               (ws as any).originalStream = stream;
             } else {
               console.warn('Max WebSocket reconnection attempts reached, stopping recording');
-              // Stop recording when max attempts reached
-              setIsRecording(false);
+              // Stop recording when max attempts reached only if currently recording
+              if (isRecording) {
+                setIsRecording(false);
+              }
               return;
             }
             
@@ -414,7 +418,10 @@ export default function ChatInterface() {
 
         ws.onopen = () => {
           console.log('WebSocket connected for STT - PCM streaming mode');
-          setIsRecording(true);
+          // Only set recording state if not already recording to prevent flickering
+          if (!isRecording) {
+            setIsRecording(true);
+          }
           reconnectAttempts.current = 0; // Reset reconnection counter on successful connection
           
           // Focus the message input when recording starts (if not loading)
@@ -438,18 +445,57 @@ export default function ChatInterface() {
           if (data.error) {
             console.error('STT error:', data.error);
           } else if (data.text) {
-            console.log(`STT result: "${data.text}" (final: ${data.is_final}), isLoading: ${isLoading}`);
-            if (data.is_final) {
-              // Accumulate transcribed text in the message input instead of auto-sending
+            console.log(`STT result: "${data.text}" (final: ${data.is_final}, word: ${data.is_word}), isLoading: ${isLoading}`);
+            
+            if (data.is_final && data.is_word) {
+              // Handle word-level final results from Soniox
+              // Build up the complete utterance from individual words
+              currentUtteranceRef.current += (currentUtteranceRef.current ? ' ' : '') + data.text;
+              
+              // Show the current utterance being built as interim text
+              console.log('Building utterance, showing interim:', currentUtteranceRef.current);
+              messageInputRef.current?.showInterimText(currentUtteranceRef.current);
+              
+              // Clear any existing timeout
+              if (utteranceTimeoutRef.current) {
+                clearTimeout(utteranceTimeoutRef.current);
+              }
+              
+              // Set timeout to finalize utterance after pause (1 second of no new words)
+              utteranceTimeoutRef.current = setTimeout(() => {
+                if (currentUtteranceRef.current.trim()) {
+                  console.log('Finalizing complete utterance:', currentUtteranceRef.current);
+                  messageInputRef.current?.appendValue(currentUtteranceRef.current.trim());
+                  messageInputRef.current?.clearInterimText();
+                  currentUtteranceRef.current = '';
+                  // Always focus input after transcription
+                  messageInputRef.current?.focus();
+                }
+              }, 1000);
+              
+            } else if (data.is_final && !data.is_word) {
+              // Handle complete utterance final results (for providers that send complete phrases)
+              console.log('Complete utterance received, calling appendValue with:', data.text);
               messageInputRef.current?.appendValue(data.text);
+              messageInputRef.current?.clearInterimText();
               
-              // Continue recording for next utterance
-              console.log('Continuing to record for next utterance...');
+              // Clear word-level utterance building
+              currentUtteranceRef.current = '';
+              if (utteranceTimeoutRef.current) {
+                clearTimeout(utteranceTimeoutRef.current);
+                utteranceTimeoutRef.current = null;
+              }
               
-              // Always focus input after transcription, regardless of loading state
+              // Always focus input after transcription
               messageInputRef.current?.focus();
+              
+            } else {
+              // For interim results, show in real-time preview
+              if (data.text.trim()) {
+                console.log('Calling showInterimText with:', data.text);
+                messageInputRef.current?.showInterimText(data.text);
+              }
             }
-            // For interim results, we could show them in the UI but not send as messages
           }
         };
 
@@ -459,6 +505,20 @@ export default function ChatInterface() {
 
         ws.onclose = (event) => {
           console.log('WebSocket closed:', event.code, event.reason);
+          
+          // Clear utterance timeout when connection closes
+          if (utteranceTimeoutRef.current) {
+            clearTimeout(utteranceTimeoutRef.current);
+            utteranceTimeoutRef.current = null;
+          }
+          
+          // Finalize any pending utterance
+          if (currentUtteranceRef.current.trim()) {
+            console.log('Connection closed, finalizing pending utterance:', currentUtteranceRef.current);
+            messageInputRef.current?.appendValue(currentUtteranceRef.current.trim());
+            messageInputRef.current?.clearInterimText();
+            currentUtteranceRef.current = '';
+          }
         };
 
       } catch (error) {
@@ -497,6 +557,20 @@ export default function ChatInterface() {
         if (ws.readyState === WebSocket.OPEN) {
           ws.close();
         }
+      }
+      
+      // Clear any pending utterance timeout
+      if (utteranceTimeoutRef.current) {
+        clearTimeout(utteranceTimeoutRef.current);
+        utteranceTimeoutRef.current = null;
+      }
+      
+      // Finalize any pending utterance when stopping recording
+      if (currentUtteranceRef.current.trim()) {
+        console.log('Recording stopped, finalizing pending utterance:', currentUtteranceRef.current);
+        messageInputRef.current?.appendValue(currentUtteranceRef.current.trim());
+        messageInputRef.current?.clearInterimText();
+        currentUtteranceRef.current = '';
       }
       
       setIsRecording(false);

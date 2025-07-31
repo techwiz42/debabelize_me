@@ -69,7 +69,7 @@ export default function LandingPage() {
           <section className="links-section">
             <div className="external-links">
               <a 
-                href="https://github.com/petermartens98/debabelizer" 
+                href="https://github.com/techwiz42/debabelizer" 
                 target="_blank" 
                 rel="noopener noreferrer"
                 className="external-link github"
@@ -78,7 +78,7 @@ export default function LandingPage() {
                 Debabelizer on GitHub
               </a>
               <a 
-                href="https://linkedin.com/in/petermartens98" 
+                href="https://www.linkedin.com/in/psisk/" 
                 target="_blank" 
                 rel="noopener noreferrer"
                 className="external-link linkedin"

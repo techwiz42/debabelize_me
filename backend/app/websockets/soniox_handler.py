@@ -52,10 +52,12 @@ async def handle_soniox_streaming(websocket: WebSocket):
                         "is_final": result.is_final,
                         "language": getattr(result, 'language_detected', 'en'),
                         "confidence": getattr(result, 'confidence', 0.0),
-                        "provider": "soniox"
+                        "provider": "soniox",
+                        "is_word": len(result.text.split()) == 1,  # Flag for single words
+                        "timestamp": result.timestamp.isoformat() if hasattr(result, 'timestamp') else None
                     }
                     
-                    # Only send non-empty results
+                    # Send both interim and final results (word-level streaming)
                     if result.text.strip():
                         print(f"Sending Soniox WebSocket response: {response_data}")
                         await websocket.send_json(response_data)

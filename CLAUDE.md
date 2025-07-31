@@ -586,6 +586,109 @@ All test scripts should be placed in project root for easy execution:
 
 This systematic approach ensures reliable STT provider integration with comprehensive validation at each layer.
 
+## Phase 13 (2025-07-31): Word-Level Streaming Duplication & Fragmentation Fix - COMPLETED
+
+### Issue Summary
+Speech transcription was producing severely fragmented and duplicated text. Example:
+- **Input Speech**: "Hello. My name is Pete. Now I want to send this message."
+- **Broken Output**: "Hell o,  my  name  is  Pet Hello, my name is Pete. Now I e. e. Now I want to send this message.  Now  Now I want to send this message.  I  w ant  to  send  this  m ess age.  I want to send this message."
+
+### Root Cause Analysis
+The issue was caused by **Soniox's word-level streaming approach**:
+
+1. **Individual Word Results**: Soniox returns each word as a separate `StreamingResult` with `is_final: true`
+2. **Frontend Misinterpretation**: Each "final" word was treated as a complete utterance and appended to message input
+3. **Accumulation Logic Failure**: The `appendValue` method was designed for complete phrases, not individual words
+4. **No Utterance Boundary Detection**: No mechanism to determine when a complete sentence/utterance was finished
+
+**Technical Details**:
+- **Soniox Implementation** (`~/debabelizer/src/debabelizer/providers/stt/soniox.py:595-604`): Creates `StreamingResult(is_final=token_is_final, text=token_text)` for each word
+- **Backend Handler** (`backend/app/websockets/soniox_handler.py:56`): Flags individual words with `"is_word": len(result.text.split()) == 1`
+- **Frontend Handler** (`frontend/components/ChatInterface.tsx:448-451`): Treated every `is_final: true` result as complete utterance
+
+### Solution Implemented
+
+#### 1. **Smart Utterance Building (Frontend)**
+- **Word Detection**: Detect `is_final: true` AND `is_word: true` results from Soniox
+- **Utterance Accumulation**: Build complete utterances by concatenating individual words with proper spacing
+- **Real-time Preview**: Show building utterance as interim text during speech
+- **Timeout-based Finalization**: Use 1-second timeout after last word to finalize complete utterances
+
+#### 2. **Enhanced Message Input Logic**
+- **Duplicate Prevention**: Enhanced `appendValue` method to detect and prevent duplicate text
+- **Fragment Merging**: Smart detection when new text completes a partial word from previous text
+- **Overlap Handling**: Replace incomplete words instead of appending when overlap detected
+
+#### 3. **Proper Cleanup & State Management**
+- **Component-Level Refs**: Moved utterance building state to component refs for proper cleanup
+- **Timeout Management**: Clear timeouts on WebSocket close, recording stop, and component cleanup
+- **Pending Utterance Finalization**: Complete any in-progress utterance during cleanup events
+
+### Key Code Changes
+
+#### Frontend (`ChatInterface.tsx`)
+```typescript
+// Component-level state for utterance building
+const currentUtteranceRef = useRef<string>('');
+const utteranceTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+// Enhanced WebSocket message handler
+if (data.is_final && data.is_word) {
+  // Build utterance from individual words
+  currentUtteranceRef.current += (currentUtteranceRef.current ? ' ' : '') + data.text;
+  messageInputRef.current?.showInterimText(currentUtteranceRef.current);
+  
+  // Finalize after 1-second pause
+  utteranceTimeoutRef.current = setTimeout(() => {
+    messageInputRef.current?.appendValue(currentUtteranceRef.current.trim());
+    currentUtteranceRef.current = '';
+  }, 1000);
+} else if (data.is_final && !data.is_word) {
+  // Handle complete utterance results from other providers
+  messageInputRef.current?.appendValue(data.text);
+}
+```
+
+#### Frontend (`MessageInput.tsx`)
+```typescript
+appendValue: (value: string) => {
+  setMessage(prev => {
+    // Prevent duplicates and handle word completion
+    const trimmedValue = value.trim();
+    const trimmedPrev = prev.trim();
+    
+    // Skip if already present
+    if (trimmedPrev.includes(trimmedValue)) return prev;
+    
+    // Handle word completion/replacement
+    const words = trimmedPrev.split(' ');
+    const lastWord = words[words.length - 1];
+    if (trimmedValue.toLowerCase().startsWith(lastWord.toLowerCase())) {
+      const withoutLastWord = words.slice(0, -1).join(' ');
+      return withoutLastWord ? `${withoutLastWord} ${trimmedValue}` : trimmedValue;
+    }
+    
+    return `${prev} ${trimmedValue}`;
+  });
+}
+```
+
+### Provider Compatibility
+The fix supports both streaming approaches:
+- **Word-Level Streaming** (Soniox): Builds utterances from individual word results
+- **Phrase-Level Streaming** (Deepgram, others): Handles complete utterance results directly
+
+### Expected Behavior
+**Input Speech**: "Hello. My name is Pete. Now I want to send this message."
+**Output**: Clean, properly formatted text with no fragmentation or duplication
+
+### Benefits Achieved
+- **Clean Transcription**: No more word fragmentation or text duplication
+- **Real-time Preview**: Users see words building up in real-time during speech
+- **Provider Agnostic**: Works with both word-level and phrase-level streaming providers
+- **Proper Cleanup**: No memory leaks from dangling timeouts or incomplete state
+- **Enhanced UX**: Smooth, natural speech-to-text experience matching modern voice assistants
+
 ## Phase 11 (2025-07-31): Google STT Implementation Bug Fixes - COMPLETED
 
 ### Implementation Summary
