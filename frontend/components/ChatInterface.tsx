@@ -526,37 +526,13 @@ export default function ChatInterface() {
         alert('Unable to access microphone. Please check permissions.');
       }
     } else {
-      // Stop recording - cleanup Web Audio API components
-      if (wsRef.current) {
-        const ws = wsRef.current as any;
-        
-        // Clear keepalive interval
-        if (keepAliveIntervalRef.current) {
-          clearInterval(keepAliveIntervalRef.current);
-          keepAliveIntervalRef.current = null;
-        }
-        
-        // Clean up Web Audio API components
-        if (ws.processor) {
-          ws.processor.disconnect();
-        }
-        if (ws.source) {
-          ws.source.disconnect();
-        }
-        if (ws.audioContext && ws.audioContext.state !== 'closed') {
-          ws.audioContext.close();
-        }
-        if (ws.stream) {
-          ws.stream.getTracks().forEach((track: MediaStreamTrack) => track.stop());
-        }
-        if (ws.originalStream) {
-          ws.originalStream.getTracks().forEach((track: MediaStreamTrack) => track.stop());
-        }
-        
-        // Close WebSocket
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.close();
-        }
+      // Stop recording - always set state first to ensure UI updates
+      setIsRecording(false);
+      
+      // Clear keepalive interval
+      if (keepAliveIntervalRef.current) {
+        clearInterval(keepAliveIntervalRef.current);
+        keepAliveIntervalRef.current = null;
       }
       
       // Clear any pending utterance timeout
@@ -573,7 +549,43 @@ export default function ChatInterface() {
         currentUtteranceRef.current = '';
       }
       
-      setIsRecording(false);
+      // Cleanup Web Audio API components and WebSocket
+      if (wsRef.current) {
+        const ws = wsRef.current as any;
+        
+        // Clean up Web Audio API components
+        try {
+          if (ws.processor) {
+            ws.processor.disconnect();
+          }
+          if (ws.source) {
+            ws.source.disconnect();
+          }
+          if (ws.audioContext && ws.audioContext.state !== 'closed') {
+            ws.audioContext.close();
+          }
+          if (ws.stream) {
+            ws.stream.getTracks().forEach((track: MediaStreamTrack) => track.stop());
+          }
+          if (ws.originalStream) {
+            ws.originalStream.getTracks().forEach((track: MediaStreamTrack) => track.stop());
+          }
+        } catch (error) {
+          console.warn('Error during audio cleanup:', error);
+        }
+        
+        // Close WebSocket
+        try {
+          if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+            ws.close();
+          }
+        } catch (error) {
+          console.warn('Error closing WebSocket:', error);
+        }
+        
+        // Clear WebSocket reference
+        wsRef.current = null;
+      }
     }
   };
 
