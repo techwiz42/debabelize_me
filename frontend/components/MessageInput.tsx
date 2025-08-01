@@ -28,7 +28,6 @@ const MessageInput = forwardRef<MessageInputHandle, MessageInputProps>(
       },
       appendValue: (value: string) => {
         setMessage(prev => {
-          // Don't add duplicate text or fragments that are already included
           const trimmedValue = value.trim();
           const trimmedPrev = prev.trim();
           
@@ -38,23 +37,41 @@ const MessageInput = forwardRef<MessageInputHandle, MessageInputProps>(
           // If previous is empty, use new value
           if (!trimmedPrev) return trimmedValue;
           
-          // Check if new value is already contained in previous text (avoid duplicates)
-          if (trimmedPrev.includes(trimmedValue)) {
-            return prev; // Don't add if already present
+          // Enhanced duplicate detection: check exact match, containment, and similarity
+          const lowerValue = trimmedValue.toLowerCase();
+          const lowerPrev = trimmedPrev.toLowerCase();
+          
+          // Skip if exact match or already fully contained
+          if (lowerPrev === lowerValue || lowerPrev.includes(lowerValue)) {
+            console.log('Skipping duplicate/contained text:', trimmedValue);
+            return prev;
           }
           
-          // Check if previous text ends with the beginning of new value (avoid fragments)
-          const words = trimmedPrev.split(' ');
-          const lastWord = words[words.length - 1];
+          // Check for substantial overlap (>70% of words)
+          const valueWords = lowerValue.split(' ');
+          const prevWords = lowerPrev.split(' ');
+          const matchingWords = valueWords.filter(word => prevWords.includes(word));
+          const overlapRatio = matchingWords.length / valueWords.length;
           
-          // If new value starts with the last word, replace the last word instead of appending
-          if (trimmedValue.toLowerCase().startsWith(lastWord.toLowerCase()) && lastWord.length < trimmedValue.length) {
-            const withoutLastWord = words.slice(0, -1).join(' ');
-            return withoutLastWord ? `${withoutLastWord} ${trimmedValue}` : trimmedValue;
+          if (overlapRatio > 0.7) {
+            console.log('Skipping high-overlap text:', trimmedValue, 'overlap:', overlapRatio);
+            return prev;
           }
           
-          // Otherwise append normally
-          return `${prev} ${trimmedValue}`;
+          // Check if new value extends the last sentence naturally
+          const lastSentence = trimmedPrev.split(/[.!?]/).pop()?.trim() || '';
+          if (lastSentence && lowerValue.startsWith(lastSentence.toLowerCase())) {
+            // Replace the incomplete last sentence with the complete one
+            const beforeLastSentence = trimmedPrev.substring(0, trimmedPrev.lastIndexOf(lastSentence));
+            console.log('Replacing incomplete sentence:', lastSentence, 'with:', trimmedValue);
+            return beforeLastSentence ? `${beforeLastSentence}${trimmedValue}` : trimmedValue;
+          }
+          
+          // Normal append with proper spacing
+          const needsSpace = trimmedPrev && !trimmedPrev.endsWith(' ') && !trimmedValue.startsWith(' ');
+          const result = needsSpace ? `${trimmedPrev} ${trimmedValue}` : `${trimmedPrev}${trimmedValue}`;
+          console.log('Appending text normally:', trimmedValue);
+          return result;
         });
         setInterimText(''); // Clear interim text when final text is added
       },
