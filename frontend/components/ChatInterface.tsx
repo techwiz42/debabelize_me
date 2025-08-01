@@ -77,6 +77,8 @@ const SUPPORTED_LANGUAGES = [
 ];
 
 export default function ChatInterface() {
+  console.log('🔥 CHATINTERFACE LOADED - NEW VERSION WITH FIXES 🔥');
+  
   const { user, logout } = useAuth();
   const router = useRouter();
   const [messages, setMessages] = useState<Message[]>([]);
@@ -148,7 +150,7 @@ export default function ChatInterface() {
     // Remember if we were recording before sending message
     setWasRecordingBeforeReply(isRecording);
     
-    // Clear any pending utterance to prevent words bleeding into next message
+    // Clear any pending utterance and interim text to prevent words bleeding into next message
     if (currentUtteranceRef.current) {
       console.log('Clearing pending utterance on message send:', currentUtteranceRef.current);
       currentUtteranceRef.current = '';
@@ -157,6 +159,8 @@ export default function ChatInterface() {
       clearTimeout(utteranceTimeoutRef.current);
       utteranceTimeoutRef.current = null;
     }
+    // Clear interim text to prevent carry-over
+    messageInputRef.current?.clearInterimText();
     
     setMessages(prev => [...prev, userMessage]);
     setIsLoading(true);
@@ -264,13 +268,16 @@ export default function ChatInterface() {
         // Connect to WebSocket for streaming STT
         const wsUrl = process.env.NEXT_PUBLIC_WS_URL;
         // Get session token from cookies for authentication
+        console.log('All cookies:', document.cookie);
         const sessionToken = document.cookie
           .split('; ')
           .find(row => row.startsWith('session_token='))
           ?.split('=')[1];
+        console.log('Extracted session token:', sessionToken ? sessionToken.substring(0, 10) + '...' : 'null');
         const wsUrlWithAuth = sessionToken 
           ? `${wsUrl}/ws/stt?session_token=${sessionToken}`
           : `${wsUrl}/ws/stt`;
+        console.log('WebSocket URL:', wsUrlWithAuth);
         let ws = new WebSocket(wsUrlWithAuth);
         wsRef.current = ws;
 
@@ -330,13 +337,16 @@ export default function ChatInterface() {
                 
                 const wsUrl = process.env.NEXT_PUBLIC_WS_URL;
                 // Get session token from cookies for authentication (reconnection)
+                console.log('Reconnection - All cookies:', document.cookie);
                 const sessionToken = document.cookie
                   .split('; ')
                   .find(row => row.startsWith('session_token='))
                   ?.split('=')[1];
+                console.log('Reconnection - Extracted session token:', sessionToken ? sessionToken.substring(0, 10) + '...' : 'null');
                 const wsUrlWithAuth = sessionToken 
                   ? `${wsUrl}/ws/stt?session_token=${sessionToken}`
                   : `${wsUrl}/ws/stt`;
+                console.log('Reconnection - WebSocket URL:', wsUrlWithAuth);
                 const newWs = new WebSocket(wsUrlWithAuth);
                 wsRef.current = newWs;
                 

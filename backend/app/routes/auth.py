@@ -57,12 +57,12 @@ async def login(user_data: UserLogin, request: Request, response: Response):
         )
         
         if success and session_token and user_response:
-            # Set secure HTTP-only cookie
+            # Set secure cookie (accessible to JS for WebSocket auth)
             response.set_cookie(
                 key="session_token",
                 value=session_token,
                 max_age=30 * 24 * 60 * 60,  # 30 days
-                httponly=True,
+                httponly=False,  # Allow JS access for WebSocket authentication
                 secure=True,  # HTTPS only
                 samesite="lax"
             )
