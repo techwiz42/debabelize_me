@@ -1,4 +1,4 @@
-import { useState, FormEvent, forwardRef, useImperativeHandle, useRef } from 'react';
+import { useState, FormEvent, forwardRef, useImperativeHandle, useRef, useEffect } from 'react';
 
 interface MessageInputProps {
   onSendMessage: (message: string) => void;
@@ -19,15 +19,22 @@ const MessageInput = forwardRef<MessageInputHandle, MessageInputProps>(
     const [interimText, setInterimText] = useState('');
     const inputRef = useRef<HTMLTextAreaElement>(null);
 
+    useEffect(() => {
+      console.log('Message state changed:', message, 'Length:', message.length, 'Trimmed:', message.trim(), 'Send button disabled:', disabled || !message.trim());
+    }, [message, disabled]);
+
     useImperativeHandle(ref, () => ({
       focus: () => {
         inputRef.current?.focus();
       },
       setValue: (value: string) => {
+        console.log('setValue called with:', value);
         setMessage(value);
       },
       appendValue: (value: string) => {
+        console.log('appendValue called with:', value);
         setMessage(prev => {
+          console.log('Previous message state:', prev);
           const trimmedValue = value.trim();
           const trimmedPrev = prev.trim();
           
@@ -71,6 +78,7 @@ const MessageInput = forwardRef<MessageInputHandle, MessageInputProps>(
           const needsSpace = trimmedPrev && !trimmedPrev.endsWith(' ') && !trimmedValue.startsWith(' ');
           const result = needsSpace ? `${trimmedPrev} ${trimmedValue}` : `${trimmedPrev}${trimmedValue}`;
           console.log('Appending text normally:', trimmedValue);
+          console.log('Final result:', result);
           return result;
         });
         setInterimText(''); // Clear interim text when final text is added
@@ -127,6 +135,7 @@ const MessageInput = forwardRef<MessageInputHandle, MessageInputProps>(
           type="submit"
           disabled={disabled || !message.trim()}
           className="send-button"
+          onClick={() => console.log('Send button clicked, disabled:', disabled, 'message:', message, 'trimmed empty:', !message.trim())}
         >
           Send
         </button>
