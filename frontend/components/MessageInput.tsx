@@ -93,7 +93,7 @@ const MessageInput = forwardRef<MessageInputHandle, MessageInputProps>(
 
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault();
-    if (message.trim() && !disabled) {
+    if (!disabled) {
       onSendMessage(message.trim());
       setMessage('');
       setInterimText(''); // Clear interim text when sending message
@@ -133,9 +133,9 @@ const MessageInput = forwardRef<MessageInputHandle, MessageInputProps>(
         />
         <button
           type="submit"
-          disabled={disabled || !message.trim()}
+          disabled={false}
           className="send-button"
-          onClick={() => console.log('Send button clicked, disabled:', disabled, 'message:', message, 'trimmed empty:', !message.trim())}
+          onClick={() => console.log('Send button clicked, disabled:', false, 'message:', message, 'trimmed empty:', !message.trim())}
         >
           Send
         </button>

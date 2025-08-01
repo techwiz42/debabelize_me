@@ -5,8 +5,11 @@ import traceback
 import tempfile
 import os
 from app.services.voice_service import voice_service
+from app.database.database import Database
+from app.utils.word_counter import count_words
+from typing import Optional
 
-async def handle_whisper_transcription(websocket: WebSocket):
+async def handle_whisper_transcription(websocket: WebSocket, current_user: Optional[object] = None):
     """WebSocket handler for OpenAI Whisper using file-based transcription (non-streaming)."""
     await websocket.accept()
     session_id = str(uuid.uuid4())
@@ -42,6 +45,16 @@ async def handle_whisper_transcription(websocket: WebSocket):
                 )
                 
                 print(f"Whisper transcription result: '{result.text}' (confidence: {result.confidence})")
+                
+                # Track words for usage statistics
+                if result.text and current_user:
+                    word_count = count_words(result.text)
+                    if word_count > 0:
+                        await Database.increment_usage_stats(
+                            user_id=current_user.id,
+                            stt_words=word_count
+                        )
+                        print(f"Tracked {word_count} STT words for user {current_user.email}")
                 
                 # Send result to frontend
                 response_data = {

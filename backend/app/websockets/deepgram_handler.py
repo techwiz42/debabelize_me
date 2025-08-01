@@ -3,8 +3,11 @@ import asyncio
 import traceback
 from app.services.voice_service import voice_service
 from app.utils.audio_processing import AUDIO_BUFFER_CONFIG
+from app.database.database import Database
+from app.utils.word_counter import count_words
+from typing import Optional
 
-async def handle_deepgram_streaming(websocket: WebSocket):
+async def handle_deepgram_streaming(websocket: WebSocket, current_user: Optional[object] = None):
     """WebSocket handler for Deepgram using true WebSocket streaming."""
     await websocket.accept()
     session_id = None
@@ -45,6 +48,16 @@ async def handle_deepgram_streaming(websocket: WebSocket):
                     
                     # Handle transcription results
                     if result.text or result.is_final:
+                        # Track words for final results only (to avoid double counting)
+                        if result.is_final and result.text and current_user:
+                            word_count = count_words(result.text)
+                            if word_count > 0:
+                                await Database.increment_usage_stats(
+                                    user_id=current_user.id,
+                                    stt_words=word_count
+                                )
+                                print(f"Tracked {word_count} STT words for user {current_user.email}")
+                        
                         response_data = {
                             "text": result.text,
                             "is_final": result.is_final,
@@ -54,7 +67,7 @@ async def handle_deepgram_streaming(websocket: WebSocket):
                             "session_id": result.session_id
                         }
                         
-                        print(f"Sending Deepgram streaming result: {response_data}")
+                        # Debug: Sending result (removed to reduce log noise)
                         await websocket.send_json(response_data)
                         
             except Exception as e:

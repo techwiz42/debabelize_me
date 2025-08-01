@@ -71,6 +71,29 @@ class Database:
                 )
             """)
             
+            # User usage statistics table
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS user_usage_stats (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    date DATE NOT NULL,
+                    stt_words INTEGER NOT NULL DEFAULT 0,
+                    tts_words INTEGER NOT NULL DEFAULT 0,
+                    stt_requests INTEGER NOT NULL DEFAULT 0,
+                    tts_requests INTEGER NOT NULL DEFAULT 0,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(user_id, date),
+                    FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+                )
+            """)
+            
+            # Create index for faster lookups
+            await db.execute("""
+                CREATE INDEX IF NOT EXISTS idx_usage_stats_user_date 
+                ON user_usage_stats (user_id, date)
+            """)
+            
             await db.commit()
             logger.info("Database initialized successfully")
     
@@ -294,3 +317,90 @@ class Database:
         except Exception as e:
             logger.error(f"Error cleaning up expired tokens: {e}")
             return 0
+    
+    @classmethod
+    async def increment_usage_stats(cls, user_id: int, stt_words: int = 0, tts_words: int = 0) -> bool:
+        """Increment usage statistics for a user for today"""
+        try:
+            async with aiosqlite.connect(DB_PATH) as db:
+                # Use date() function to get today's date in SQLite
+                await db.execute("""
+                    INSERT INTO user_usage_stats (user_id, date, stt_words, tts_words, stt_requests, tts_requests)
+                    VALUES (?, date('now'), ?, ?, ?, ?)
+                    ON CONFLICT(user_id, date) DO UPDATE SET
+                        stt_words = stt_words + ?,
+                        tts_words = tts_words + ?,
+                        stt_requests = stt_requests + ?,
+                        tts_requests = tts_requests + ?,
+                        updated_at = CURRENT_TIMESTAMP
+                """, (
+                    user_id, 
+                    stt_words, tts_words, 
+                    1 if stt_words > 0 else 0, 
+                    1 if tts_words > 0 else 0,
+                    stt_words, tts_words,
+                    1 if stt_words > 0 else 0, 
+                    1 if tts_words > 0 else 0
+                ))
+                await db.commit()
+                logger.info(f"Updated usage stats for user {user_id}: +{stt_words} STT words, +{tts_words} TTS words")
+                return True
+        except Exception as e:
+            logger.error(f"Error updating usage stats for user {user_id}: {e}")
+            return False
+    
+    @classmethod
+    async def get_usage_stats(cls, user_id: int, start_date: str = None, end_date: str = None) -> list:
+        """Get usage statistics for a user within date range"""
+        try:
+            async with aiosqlite.connect(DB_PATH) as db:
+                db.row_factory = aiosqlite.Row
+                
+                query = "SELECT * FROM user_usage_stats WHERE user_id = ?"
+                params = [user_id]
+                
+                if start_date:
+                    query += " AND date >= ?"
+                    params.append(start_date)
+                if end_date:
+                    query += " AND date <= ?"
+                    params.append(end_date)
+                    
+                query += " ORDER BY date DESC"
+                
+                cursor = await db.execute(query, params)
+                rows = await cursor.fetchall()
+                return [dict(row) for row in rows]
+        except Exception as e:
+            logger.error(f"Error getting usage stats for user {user_id}: {e}")
+            return []
+    
+    @classmethod
+    async def get_all_users_usage_summary(cls) -> list:
+        """Get usage summary for all users"""
+        try:
+            async with aiosqlite.connect(DB_PATH) as db:
+                db.row_factory = aiosqlite.Row
+                cursor = await db.execute("""
+                    SELECT 
+                        u.id as user_id,
+                        u.email,
+                        u.created_at as user_created,
+                        COALESCE(SUM(us.stt_words), 0) as total_stt_words,
+                        COALESCE(SUM(us.tts_words), 0) as total_tts_words,
+                        COALESCE(SUM(us.stt_requests), 0) as total_stt_requests,
+                        COALESCE(SUM(us.tts_requests), 0) as total_tts_requests,
+                        COUNT(DISTINCT us.date) as active_days,
+                        MIN(us.date) as first_usage,
+                        MAX(us.date) as last_usage
+                    FROM users u
+                    LEFT JOIN user_usage_stats us ON u.id = us.user_id
+                    WHERE u.is_active = TRUE
+                    GROUP BY u.id, u.email
+                    ORDER BY u.created_at DESC
+                """)
+                rows = await cursor.fetchall()
+                return [dict(row) for row in rows]
+        except Exception as e:
+            logger.error(f"Error getting usage summary: {e}")
+            return []

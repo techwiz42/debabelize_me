@@ -148,6 +148,16 @@ export default function ChatInterface() {
     // Remember if we were recording before sending message
     setWasRecordingBeforeReply(isRecording);
     
+    // Clear any pending utterance to prevent words bleeding into next message
+    if (currentUtteranceRef.current) {
+      console.log('Clearing pending utterance on message send:', currentUtteranceRef.current);
+      currentUtteranceRef.current = '';
+    }
+    if (utteranceTimeoutRef.current) {
+      clearTimeout(utteranceTimeoutRef.current);
+      utteranceTimeoutRef.current = null;
+    }
+    
     setMessages(prev => [...prev, userMessage]);
     setIsLoading(true);
     
@@ -253,7 +263,15 @@ export default function ChatInterface() {
 
         // Connect to WebSocket for streaming STT
         const wsUrl = process.env.NEXT_PUBLIC_WS_URL;
-        let ws = new WebSocket(`${wsUrl}/ws/stt`);
+        // Get session token from cookies for authentication
+        const sessionToken = document.cookie
+          .split('; ')
+          .find(row => row.startsWith('session_token='))
+          ?.split('=')[1];
+        const wsUrlWithAuth = sessionToken 
+          ? `${wsUrl}/ws/stt?session_token=${sessionToken}`
+          : `${wsUrl}/ws/stt`;
+        let ws = new WebSocket(wsUrlWithAuth);
         wsRef.current = ws;
 
         // Use pre-created AudioContext or create new one for PCM processing
@@ -311,7 +329,15 @@ export default function ChatInterface() {
                 reconnectAttempts.current++;
                 
                 const wsUrl = process.env.NEXT_PUBLIC_WS_URL;
-                const newWs = new WebSocket(`${wsUrl}/ws/stt`);
+                // Get session token from cookies for authentication (reconnection)
+                const sessionToken = document.cookie
+                  .split('; ')
+                  .find(row => row.startsWith('session_token='))
+                  ?.split('=')[1];
+                const wsUrlWithAuth = sessionToken 
+                  ? `${wsUrl}/ws/stt?session_token=${sessionToken}`
+                  : `${wsUrl}/ws/stt`;
+                const newWs = new WebSocket(wsUrlWithAuth);
                 wsRef.current = newWs;
                 
                 // Copy the same event handlers to the new WebSocket
@@ -493,7 +519,7 @@ export default function ChatInterface() {
                 clearTimeout(utteranceTimeoutRef.current);
               }
               
-              // Set timeout to finalize utterance after pause (2.5 seconds of no new words)
+              // Set timeout to finalize utterance after pause (1 second of no new words)
               utteranceTimeoutRef.current = setTimeout(() => {
                 if (currentUtteranceRef.current.trim()) {
                   console.log('Finalizing complete utterance:', currentUtteranceRef.current);
@@ -503,7 +529,7 @@ export default function ChatInterface() {
                   // Always focus input after transcription
                   messageInputRef.current?.focus();
                 }
-              }, 2500);
+              }, 1000);
               
             } else if (data.is_final && !data.is_word) {
               // Handle complete utterance final results (for providers that send complete phrases)
@@ -735,7 +761,7 @@ export default function ChatInterface() {
       </div>
 
       <div className="input-container">
-        <MessageInput ref={messageInputRef} onSendMessage={handleSendMessage} disabled={isLoading} />
+        <MessageInput ref={messageInputRef} onSendMessage={handleSendMessage} disabled={false} />
       </div>
     </div>
   );

@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, UploadFile, File
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, UploadFile, File, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 import io
@@ -13,9 +13,11 @@ from app.utils.audio_processing import AUDIO_BUFFER_CONFIG
 from app.websockets.stt_handler import handle_stt_websocket
 from app.middleware.security import SecurityMiddleware, RequestSizeLimit
 from app.core.security_config import security_settings
-from app.routes.auth import router as auth_router
+from app.routes.auth import router as auth_router, get_current_user
 from app.database.database import Database
 from app.services.auth_service import auth_service
+from app.utils.word_counter import count_words
+from app.models.auth import UserResponse
 
 app = FastAPI(title="Debabelizer API", description="Universal Voice Processing API")
 
@@ -70,11 +72,24 @@ async def speech_to_text(audio: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=f"STT error: {str(e)}")
 
 @app.post("/tts")
-async def text_to_speech(request: TTSRequest):
+async def text_to_speech(request: TTSRequest, current_user: UserResponse = Depends(get_current_user)):
     """Convert text to speech using debabelizer TTS."""
     try:
+        print(f"TTS request - User authenticated: {current_user is not None}, Text: '{request.text[:50]}...'")
+        
         if not voice_service.tts_processor:
+            print("ERROR: TTS processor not initialized")
             raise HTTPException(status_code=500, detail="TTS processor not initialized")
+        
+        # Count words for usage tracking
+        word_count = count_words(request.text)
+        
+        # Track usage if user is authenticated
+        if current_user:
+            await Database.increment_usage_stats(
+                user_id=current_user.id,
+                tts_words=word_count
+            )
         
         result = await voice_service.tts_processor.synthesize(
             request.text,
@@ -82,11 +97,16 @@ async def text_to_speech(request: TTSRequest):
             language=request.language
         )
         
+        print(f"TTS synthesis successful, returning {len(result.audio_data)} bytes")
+        
         return StreamingResponse(
             io.BytesIO(result.audio_data),
             media_type="audio/mpeg"
         )
     except Exception as e:
+        print(f"TTS ERROR: {str(e)}")
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"TTS error: {str(e)}")
 
 @app.websocket("/ws/stt")

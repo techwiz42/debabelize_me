@@ -3,8 +3,11 @@ import asyncio
 import uuid
 import traceback
 from app.services.voice_service import voice_service
+from app.database.database import Database
+from app.utils.word_counter import count_words
+from typing import Optional
 
-async def handle_soniox_streaming(websocket: WebSocket):
+async def handle_soniox_streaming(websocket: WebSocket, current_user: Optional[object] = None):
     """WebSocket handler for Soniox using real streaming (native streaming support)."""
     await websocket.accept()
     session_id = str(uuid.uuid4())
@@ -44,7 +47,17 @@ async def handle_soniox_streaming(websocket: WebSocket):
             try:
                 print(f"Starting to listen for streaming results from session {stt_session_id}")
                 async for result in voice_service.stt_processor.get_streaming_results(stt_session_id):
-                    print(f"Soniox streaming result: '{result.text}' (final: {result.is_final}, confidence: {getattr(result, 'confidence', 0.0)})")
+                    # Debug: Soniox result (removed to reduce log noise)
+                    
+                    # Track words for final results only (to avoid double counting)
+                    if result.is_final and result.text and current_user:
+                        word_count = count_words(result.text)
+                        if word_count > 0:
+                            await Database.increment_usage_stats(
+                                user_id=current_user.id,
+                                stt_words=word_count
+                            )
+                            print(f"Tracked {word_count} STT words for user {current_user.email}")
                     
                     # Send result to frontend
                     response_data = {
@@ -59,7 +72,7 @@ async def handle_soniox_streaming(websocket: WebSocket):
                     
                     # Send both interim and final results (word-level streaming)
                     if result.text.strip():
-                        print(f"Sending Soniox WebSocket response: {response_data}")
+                        # Debug: Sending response (removed to reduce log noise)
                         await websocket.send_json(response_data)
                         
                 print(f"Streaming results loop ended for session {stt_session_id}")
@@ -81,7 +94,7 @@ async def handle_soniox_streaming(websocket: WebSocket):
                     # Keepalive ping - continue silently
                     continue
                 
-                print(f"Streaming {len(data)} bytes to Soniox")
+                # Debug: Streaming audio data (removed to reduce log noise)
                 
                 # Stream audio data directly to Soniox (real streaming) - using correct method name
                 try:
