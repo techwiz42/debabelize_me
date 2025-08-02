@@ -11,7 +11,7 @@ export default function AuthPage() {
 
   const handleAuthSuccess = () => {
     // Redirect to main app after successful authentication
-    router.push('/');
+    router.push('/app');
   };
 
   return (

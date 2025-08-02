@@ -2,10 +2,17 @@
 
 import { useRouter } from 'next/navigation'
 import { useAuth } from '@/components/AuthProvider'
+import { useEffect } from 'react'
 
 export default function LandingPage() {
   const router = useRouter()
-  const { isAuthenticated, user, logout } = useAuth()
+  const { isAuthenticated, isLoading, user, logout } = useAuth()
+
+  useEffect(() => {
+    if (!isLoading && isAuthenticated) {
+      router.push('/app')
+    }
+  }, [isAuthenticated, isLoading, router])
 
   const handleLogout = async () => {
     try {
@@ -13,6 +20,51 @@ export default function LandingPage() {
     } catch (error) {
       console.error('Logout error:', error)
     }
+  }
+
+  if (isLoading) {
+    return (
+      <div className="landing-page">
+        <div className="loading-container">
+          <div className="spinner"></div>
+          <p>Loading...</p>
+        </div>
+        <style jsx>{`
+          .landing-page {
+            min-height: 100vh;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+          }
+          
+          .loading-container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 20px;
+            color: white;
+          }
+          
+          .spinner {
+            border: 4px solid rgba(255, 255, 255, 0.3);
+            border-top: 4px solid white;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+          }
+          
+          @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+          }
+        `}</style>
+      </div>
+    )
   }
 
   return (
@@ -69,22 +121,13 @@ export default function LandingPage() {
           <section className="links-section">
             <div className="external-links">
               <a 
-                href="https://github.com/techwiz42/debabelizer" 
-                target="_blank" 
-                rel="noopener noreferrer"
-                className="external-link github"
-              >
-                <span className="link-icon">📦</span>
-                Debabelizer on GitHub
-              </a>
-              <a 
                 href="https://www.linkedin.com/in/psisk/" 
                 target="_blank" 
                 rel="noopener noreferrer"
                 className="external-link linkedin"
               >
                 <span className="link-icon">💼</span>
-                LinkedIn Profile
+                My LinkedIn Profile
               </a>
             </div>
           </section>
