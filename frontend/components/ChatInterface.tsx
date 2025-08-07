@@ -77,7 +77,7 @@ const SUPPORTED_LANGUAGES = [
 ];
 
 export default function ChatInterface() {
-  console.log('🔥 CHATINTERFACE LOADED - NEW VERSION WITH FIXES 🔥');
+  console.log('🔥 CHATINTERFACE LOADED - NEW VERSION WITH FIXES 🔥', new Date().toISOString());
   
   const { user, logout } = useAuth();
   const router = useRouter();
@@ -88,6 +88,7 @@ export default function ChatInterface() {
   const [selectedLanguage, setSelectedLanguage] = useState('auto');
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [wasRecordingBeforeReply, setWasRecordingBeforeReply] = useState(false);
+  const wasRecordingBeforeReplyRef = useRef(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
@@ -101,6 +102,8 @@ export default function ChatInterface() {
   const currentUtteranceRef = useRef<string>('');
   const utteranceTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const userStoppedRecording = useRef<boolean>(false);
+  const isRecordingRef = useRef<boolean>(false);
+  const isSendingMessage = useRef<boolean>(false);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -140,6 +143,24 @@ export default function ChatInterface() {
   }, []);
 
   const handleSendMessage = async (content: string) => {
+    // Set flag to indicate we're sending a message
+    isSendingMessage.current = true;
+    
+    // First, finalize any pending utterance before creating the message
+    if (currentUtteranceRef.current.trim()) {
+      console.log('Finalizing pending utterance before send:', currentUtteranceRef.current);
+      // Clear the timeout since we're finalizing now
+      if (utteranceTimeoutRef.current) {
+        clearTimeout(utteranceTimeoutRef.current);
+        utteranceTimeoutRef.current = null;
+      }
+      // Append the pending utterance to the message
+      messageInputRef.current?.appendValue(currentUtteranceRef.current.trim());
+      currentUtteranceRef.current = '';
+      // Wait a tiny bit for the state to update
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    
     const userMessage: Message = {
       id: Date.now().toString(),
       content,
@@ -148,17 +169,18 @@ export default function ChatInterface() {
     };
     
     // Remember if we were recording before sending message
-    setWasRecordingBeforeReply(isRecording);
+    const wasRecording = isRecordingRef.current || isRecording;
+    console.log('Recording state check:', { isRecording, isRecordingRef: isRecordingRef.current, wasRecording });
+    setWasRecordingBeforeReply(wasRecording);
+    wasRecordingBeforeReplyRef.current = wasRecording;
     
-    // Clear any pending utterance and interim text to prevent words bleeding into next message
-    if (currentUtteranceRef.current) {
-      console.log('Clearing pending utterance on message send:', currentUtteranceRef.current);
-      currentUtteranceRef.current = '';
+    // Stop recording when sending message
+    if (wasRecording) {
+      console.log('Stopping recording on message send');
+      toggleRecording(true); // true = programmatic stop
+      // toggleRecording will handle finalizing any pending utterance
     }
-    if (utteranceTimeoutRef.current) {
-      clearTimeout(utteranceTimeoutRef.current);
-      utteranceTimeoutRef.current = null;
-    }
+    
     // Clear interim text to prevent carry-over
     messageInputRef.current?.clearInterimText();
     
@@ -182,6 +204,35 @@ export default function ChatInterface() {
       
       setMessages(prev => [...prev, assistantMessage]);
       
+      // Restart recording immediately after message is displayed if it was active before
+      const shouldRestartRecording = wasRecordingBeforeReplyRef.current || wasRecordingBeforeReply;
+      console.log('Recording restart check:', {
+        wasRecordingBeforeReply,
+        wasRecordingBeforeReplyRef: wasRecordingBeforeReplyRef.current,
+        shouldRestartRecording,
+        isRecording,
+        isRecordingRef: isRecordingRef.current,
+        userStoppedRecording: userStoppedRecording.current
+      });
+      
+      // Force clear the user stopped flag since this was a programmatic stop
+      if (shouldRestartRecording) {
+        userStoppedRecording.current = false;
+      }
+      
+      if (shouldRestartRecording && !isRecordingRef.current) {
+        setTimeout(() => {
+          console.log('Restarting recording after response displayed');
+          // Reset the flag before toggling
+          userStoppedRecording.current = false;
+          // Force start recording
+          toggleRecording(false, true); // false = not programmatic stop, true = force start
+          setWasRecordingBeforeReply(false);
+          wasRecordingBeforeReplyRef.current = false;
+          messageInputRef.current?.focus();
+        }, 500); // Longer delay to ensure component has stabilized after remount
+      }
+      
       // Play audio if playback is enabled
       if (isPlaybackEnabled) {
         try {
@@ -190,21 +241,11 @@ export default function ChatInterface() {
           const audio = new Audio(audioUrl);
           audio.play();
           
-          // Clean up URL after audio finishes and restart recording if needed
+          // Clean up URL after audio finishes
           audio.addEventListener('ended', () => {
             URL.revokeObjectURL(audioUrl);
-            
-            // Restart recording if it was active before the reply and user hasn't manually stopped
-            if (wasRecordingBeforeReply && !isRecording && !userStoppedRecording.current) {
-              setTimeout(() => {
-                toggleRecording();
-                setWasRecordingBeforeReply(false);
-                messageInputRef.current?.focus();
-              }, 100); // Small delay to ensure audio cleanup
-            } else {
-              // Always focus input after audio playback
-              messageInputRef.current?.focus();
-            }
+            // Always focus input after audio playback
+            messageInputRef.current?.focus();
           });
         } catch (error) {
           console.error('Error playing audio:', error);
@@ -223,25 +264,22 @@ export default function ChatInterface() {
       setMessages(prev => [...prev, errorMessage]);
     } finally {
       setIsLoading(false);
-      
-      // If playback is disabled, restart recording immediately after loading and focus input
-      if (!isPlaybackEnabled && wasRecordingBeforeReply && !isRecording && !userStoppedRecording.current) {
-        setTimeout(() => {
-          toggleRecording();
-          setWasRecordingBeforeReply(false);
-          messageInputRef.current?.focus();
-        }, 100);
-      } else {
-        // Always focus input after loading completes
-        messageInputRef.current?.focus();
-      }
+      // Always focus input after loading completes
+      messageInputRef.current?.focus();
+      // Clear sending flag
+      isSendingMessage.current = false;
     }
   };
 
-  const toggleRecording = async () => {
-    if (!isRecording) {
+  const toggleRecording = async (programmaticStop = false, forceStart = false) => {
+    if (!isRecording || forceStart) {
       // Clear the user stopped flag when starting recording
       userStoppedRecording.current = false;
+      // Reset reconnection attempts for fresh start
+      reconnectAttempts.current = 0;
+      // Set recording state immediately
+      setIsRecording(true);
+      isRecordingRef.current = true;
       
       // Start recording using Thanotopolis-style PCM streaming
       try {
@@ -353,6 +391,7 @@ export default function ChatInterface() {
                 // Copy the same event handlers to the new WebSocket
                 const originalOnOpen = ws.onopen;
                 newWs.onopen = (event) => {
+                  console.log('Reconnected WebSocket opened');
                   isWebSocketReady = true; // Set ready flag for reconnected WebSocket
                   if (originalOnOpen) {
                     originalOnOpen.call(newWs, event);
@@ -376,6 +415,7 @@ export default function ChatInterface() {
                 if (isRecording && !userStoppedRecording.current) {
                   userStoppedRecording.current = true;
                   setIsRecording(false);
+                  isRecordingRef.current = false;
                 }
                 return;
               }
@@ -486,10 +526,7 @@ export default function ChatInterface() {
         ws.onopen = () => {
           console.log('WebSocket connected for STT - PCM streaming mode');
           isWebSocketReady = true; // Mark WebSocket as ready
-          // Only set recording state if not already recording
-          if (!isRecording) {
-            setIsRecording(true);
-          }
+          // Recording state already set at the beginning of toggleRecording
           reconnectAttempts.current = 0; // Reset reconnection counter on successful connection
           
           // Focus the message input when recording starts (if not loading)
@@ -539,7 +576,7 @@ export default function ChatInterface() {
                   // Always focus input after transcription
                   messageInputRef.current?.focus();
                 }
-              }, 1000);
+              }, 500); // Shorter timeout for faster finalization of single phrases
               
             } else if (data.is_final && !data.is_word) {
               // Handle complete utterance final results (for providers that send complete phrases)
@@ -595,10 +632,12 @@ export default function ChatInterface() {
       }
     } else {
       // Stop recording - set flag to prevent WebSocket onopen from overriding
-      console.log('User clicked to stop recording');
-      userStoppedRecording.current = true;
+      console.log(programmaticStop ? 'Programmatically stopping recording' : 'User clicked to stop recording');
+      console.trace('Recording stop call stack');
+      userStoppedRecording.current = !programmaticStop;
       // Always set state first to ensure UI updates
       setIsRecording(false);
+      isRecordingRef.current = false;
       
       // Clear keepalive interval
       if (keepAliveIntervalRef.current) {
@@ -720,13 +759,15 @@ export default function ChatInterface() {
             </select>
             <div className="audio-controls">
               <button
+                type="button"
                 className={`audio-control-btn ${isRecording ? 'recording' : ''}`}
-                onClick={toggleRecording}
+                onClick={() => toggleRecording(false, false)}
                 title={isRecording ? 'Stop Recording' : 'Start Recording'}
               >
                 {isRecording ? '🛑' : '🎤'}
               </button>
               <button
+                type="button"
                 className={`audio-control-btn ${isPlaybackEnabled ? 'enabled' : 'disabled'}`}
                 onClick={togglePlayback}
                 title={isPlaybackEnabled ? 'Disable Audio Output' : 'Enable Audio Output'}
@@ -734,6 +775,7 @@ export default function ChatInterface() {
                 {isPlaybackEnabled ? '🔊' : '🔇'}
               </button>
               <button
+                type="button"
                 className="audio-control-btn new-chat-btn"
                 onClick={clearConversation}
                 title="Start New Conversation"
