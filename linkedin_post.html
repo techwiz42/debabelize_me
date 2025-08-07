@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>LinkedIn Post - Debabelizer Launch</title>
+    <style>
+        body { font-family: Arial, sans-serif; line-height: 1.6; max-width: 600px; margin: 0 auto; padding: 20px; }
+        h1 { color: #333; }
+        ul { margin: 10px 0; }
+        li { margin: 5px 0; }
+        code { background-color: #f4f4f4; padding: 2px 4px; border-radius: 3px; font-family: monospace; }
+        pre { background-color: #f4f4f4; padding: 15px; border-radius: 5px; overflow-x: auto; }
+        .hashtags { color: #0066cc; margin-top: 20px; }
+        a { color: #0066cc; text-decoration: none; }
+        a:hover { text-decoration: underline; }
+    </style>
+</head>
+<body>
+
+<h1>LinkedIn Post - Debabelizer Launch</h1>
+
+<p><strong>Introducing Debabelizer: A unified Python library for speech-to-text and text-to-speech</strong></p>
+
+<p>After working with multiple voice processing APIs, we built Debabelizer to solve a common problem: each provider has different interfaces, authentication methods, and data formats.</p>
+
+<p><strong>🎉 We're excited to announce that Debabelizer is now open source and in beta!</strong> We're actively seeking feedback from developers who work with voice processing APIs.</p>
+
+<p>Debabelizer provides a unified API that works with:</p>
+<ul>
+    <li><strong>STT:</strong> Soniox, Deepgram, Google Cloud, Azure, OpenAI Whisper</li>
+    <li><strong>TTS:</strong> ElevenLabs, OpenAI, Google Cloud, Azure</li>
+</ul>
+
+<p><strong>Key features:</strong></p>
+<ul>
+    <li>Consistent interface across all providers</li>
+    <li>Real-time streaming support for most STT providers</li>
+    <li>Real-time language auto-detection for 60+ languages (via Soniox)</li>
+    <li>Provider auto-selection based on cost, latency, or quality preferences</li>
+    <li>Easy provider switching without code changes</li>
+</ul>
+
+<pre><code># Same code works with any provider
+processor = VoiceProcessor(stt_provider="soniox")
+result = await processor.transcribe_file("audio.wav")</code></pre>
+
+<p>You can try it at <a href="https://debabelize.me">debabelize.me</a>, which demonstrates real-time transcription and synthesis using the library. <em>Note: This is our test environment and may be under construction from time to time.</em></p>
+
+<p>The package is now available on PyPI: <code>pip install debabelizer</code></p>
+
+<p>We built this because managing multiple voice APIs was becoming repetitive. The unified interface has saved development time on several projects.</p>
+
+<p><strong>Beta Testing &amp; Feedback</strong>: As we're in beta, we'd love to hear from actual users! What voice processing challenges are you facing? Which providers would you like to see added? Your feedback will help shape the future of this project.</p>
+
+<p>GitHub: <a href="https://github.com/techwiz42/debabelizer">github.com/techwiz42/debabelizer</a></p>
+
+<p class="hashtags">#python #speechprocessing #ai #opensource</p>
+
+</body>
+</html>
