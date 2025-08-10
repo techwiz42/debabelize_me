@@ -29,7 +29,7 @@ async def handle_soniox_streaming(websocket: WebSocket, current_user: Optional[o
             stt_session_id = await voice_service.stt_processor.start_streaming_transcription(
                 audio_format="pcm",      # PCM format from frontend
                 sample_rate=16000,       # 16kHz from frontend  
-                language="en",           # Primary language
+                enable_language_identification=True,  # Enable auto language detection
                 has_pending_audio=True   # Indicate we expect more audio
             )
             print(f"SUCCESS: Soniox streaming session started: {stt_session_id}")
@@ -63,7 +63,7 @@ async def handle_soniox_streaming(websocket: WebSocket, current_user: Optional[o
                     response_data = {
                         "text": result.text,
                         "is_final": result.is_final,
-                        "language": getattr(result, 'language_detected', 'en'),
+                        "language": getattr(result, 'language_detected', getattr(result, 'language', 'auto')),
                         "confidence": getattr(result, 'confidence', 0.0),
                         "provider": "soniox",
                         "is_word": len(result.text.split()) == 1,  # Flag for single words

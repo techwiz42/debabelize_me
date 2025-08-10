@@ -7,6 +7,7 @@ from app.services.search_service import search_service
 from app.services.voice_service import voice_service
 from app.services.security_service import security_service
 from app.models.schemas import ChatMessage, ChatResponse
+from app.core.agent_config import get_telephony_agent_prompt
 
 # Initialize OpenAI
 openai.api_key = settings.openai_api_key
@@ -62,14 +63,16 @@ class ChatService:
     
     def _get_system_prompt(self, language: Optional[str] = None) -> str:
         """Generate system prompt with optional language specification"""
-        base_prompt = """You are Babs, a friendly and witty AI assistant with a good sense of humor. You're helpful but not overly eager - sometimes a little sass or a joke is more appropriate than a lengthy explanation. Keep responses conversational and don't be afraid to be a bit cheeky when the moment calls for it. You're like that friend who gives good advice but might also roast you a little."""
+        # Get the base prompt from agent config
+        base_prompt = get_telephony_agent_prompt()
         
         if language and language != 'auto' and language != 'en':
             # Validate language code to prevent injection
             if not security_service.validate_language_code(language):
                 language = 'en'
             language_name = self.language_names.get(language, 'English')
-            base_prompt = f"""You are Babs, a friendly and witty AI assistant with a good sense of humor. Always respond in {language_name}. You're helpful but not overly eager - sometimes a little sass or a joke is more appropriate than a lengthy explanation. Keep responses conversational in {language_name} and don't be afraid to be a bit cheeky when the moment calls for it."""
+            # Add language instruction to the prompt
+            base_prompt = f"{base_prompt}\n\nIMPORTANT: Always respond in {language_name}."
         
         # Wrap with security instructions
         return security_service.wrap_system_prompt(base_prompt)

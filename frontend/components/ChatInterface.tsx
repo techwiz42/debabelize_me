@@ -139,7 +139,38 @@ export default function ChatInterface() {
 
     // Pre-establish connection after a short delay to avoid immediate startup overhead
     const timer = setTimeout(preEstablishConnection, 1000);
-    return () => clearTimeout(timer);
+    return () => {
+      clearTimeout(timer);
+      
+      // Clean up on component unmount
+      if (wsRef.current) {
+        console.log('Component unmounting - cleaning up WebSocket');
+        try {
+          if (wsRef.current.readyState === WebSocket.OPEN || wsRef.current.readyState === WebSocket.CONNECTING) {
+            wsRef.current.close();
+          }
+        } catch (error) {
+          console.warn('Error closing WebSocket on unmount:', error);
+        }
+      }
+      
+      // Clean up audio context
+      if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
+        try {
+          audioContextRef.current.close();
+        } catch (error) {
+          console.warn('Error closing AudioContext on unmount:', error);
+        }
+      }
+      
+      // Clear any pending timeouts
+      if (keepAliveIntervalRef.current) {
+        clearInterval(keepAliveIntervalRef.current);
+      }
+      if (utteranceTimeoutRef.current) {
+        clearTimeout(utteranceTimeoutRef.current);
+      }
+    };
   }, []);
 
   const handleSendMessage = async (content: string) => {
@@ -204,34 +235,30 @@ export default function ChatInterface() {
       
       setMessages(prev => [...prev, assistantMessage]);
       
-      // Restart recording immediately after message is displayed if it was active before
-      const shouldRestartRecording = wasRecordingBeforeReplyRef.current || wasRecordingBeforeReply;
-      console.log('Recording restart check:', {
-        wasRecordingBeforeReply,
-        wasRecordingBeforeReplyRef: wasRecordingBeforeReplyRef.current,
-        shouldRestartRecording,
-        isRecording,
-        isRecordingRef: isRecordingRef.current,
-        userStoppedRecording: userStoppedRecording.current
-      });
-      
-      // Force clear the user stopped flag since this was a programmatic stop
-      if (shouldRestartRecording) {
-        userStoppedRecording.current = false;
-      }
-      
-      if (shouldRestartRecording && !isRecordingRef.current) {
-        setTimeout(() => {
-          console.log('Restarting recording after response displayed');
-          // Reset the flag before toggling
+      // Function to restart recording if it was active before
+      const restartRecordingIfNeeded = async () => {
+        const shouldRestart = wasRecordingBeforeReplyRef.current || wasRecordingBeforeReply;
+        console.log('restartRecordingIfNeeded called:', {
+          shouldRestart,
+          wasRecordingBeforeReply,
+          wasRecordingBeforeReplyRef: wasRecordingBeforeReplyRef.current,
+          isRecording,
+          isRecordingRef: isRecordingRef.current,
+          userStoppedRecording: userStoppedRecording.current
+        });
+        
+        if (shouldRestart) {
+          console.log('Recording should restart - clearing flags and calling toggleRecording');
+          // Clear all flags that might prevent restart
           userStoppedRecording.current = false;
-          // Force start recording
-          toggleRecording(false, true); // false = not programmatic stop, true = force start
           setWasRecordingBeforeReply(false);
           wasRecordingBeforeReplyRef.current = false;
+          
+          // Always force start, regardless of current state
+          await toggleRecording(false, true); // false = not programmatic stop, true = force start
           messageInputRef.current?.focus();
-        }, 500); // Longer delay to ensure component has stabilized after remount
-      }
+        }
+      };
       
       // Play audio if playback is enabled
       if (isPlaybackEnabled) {
@@ -241,15 +268,21 @@ export default function ChatInterface() {
           const audio = new Audio(audioUrl);
           audio.play();
           
-          // Clean up URL after audio finishes
+          // Clean up URL after audio finishes and restart recording
           audio.addEventListener('ended', () => {
             URL.revokeObjectURL(audioUrl);
-            // Always focus input after audio playback
-            messageInputRef.current?.focus();
+            console.log('TTS audio playback ended');
+            // Restart recording after TTS playback completes
+            restartRecordingIfNeeded();
           });
         } catch (error) {
           console.error('Error playing audio:', error);
+          // If TTS fails, still restart recording
+          setTimeout(restartRecordingIfNeeded, 500);
         }
+      } else {
+        // If TTS is disabled, restart recording immediately after message display
+        setTimeout(restartRecordingIfNeeded, 500);
       }
     } catch (error) {
       console.error('Error sending message:', error);
@@ -262,6 +295,18 @@ export default function ChatInterface() {
       };
       
       setMessages(prev => [...prev, errorMessage]);
+      
+      // Restart recording even after error
+      if (wasRecordingBeforeReplyRef.current || wasRecordingBeforeReply) {
+        setTimeout(async () => {
+          console.log('Restarting recording after error');
+          userStoppedRecording.current = false;
+          setWasRecordingBeforeReply(false);
+          wasRecordingBeforeReplyRef.current = false;
+          await toggleRecording(false, true);
+          messageInputRef.current?.focus();
+        }, 500);
+      }
     } finally {
       setIsLoading(false);
       // Always focus input after loading completes
@@ -272,14 +317,37 @@ export default function ChatInterface() {
   };
 
   const toggleRecording = async (programmaticStop = false, forceStart = false) => {
+    console.log('toggleRecording called:', {
+      isRecording,
+      isRecordingRef: isRecordingRef.current,
+      programmaticStop,
+      forceStart,
+      userStoppedRecording: userStoppedRecording.current
+    });
+    
     if (!isRecording || forceStart) {
       // Clear the user stopped flag when starting recording
       userStoppedRecording.current = false;
       // Reset reconnection attempts for fresh start
       reconnectAttempts.current = 0;
+      
+      // Clean up any existing WebSocket connection before starting new one
+      if (wsRef.current) {
+        console.log('Cleaning up existing WebSocket before starting new recording');
+        try {
+          if (wsRef.current.readyState === WebSocket.OPEN || wsRef.current.readyState === WebSocket.CONNECTING) {
+            wsRef.current.close();
+          }
+        } catch (error) {
+          console.warn('Error closing existing WebSocket:', error);
+        }
+        wsRef.current = null;
+      }
+      
       // Set recording state immediately
       setIsRecording(true);
       isRecordingRef.current = true;
+      console.log('Recording state set to true');
       
       // Start recording using Thanotopolis-style PCM streaming
       try {
@@ -343,6 +411,10 @@ export default function ChatInterface() {
         let recentAudioFramesWithActivity = 0;
         const RECENT_AUDIO_THRESHOLD = 2; // Reduced threshold for faster processing
         let isWebSocketReady = false; // Track when WebSocket is ready
+        
+        // Audio buffer to store chunks while WebSocket is connecting
+        const audioBuffer: ArrayBuffer[] = [];
+        const MAX_BUFFER_SIZE = 20; // Store up to 20 chunks (about 320ms at 16ms per chunk)
 
         // Calculate resampling ratio
         const sourceSampleRate = audioContext.sampleRate;
@@ -355,10 +427,7 @@ export default function ChatInterface() {
             return;
           }
           
-          // Don't process audio until WebSocket is ready
-          if (!isWebSocketReady) {
-            return;
-          }
+          // Process audio even if WebSocket is not ready - we'll buffer it
           
           // If WebSocket is not open, check if it's still connecting
           if (ws.readyState !== WebSocket.OPEN) {
@@ -508,8 +577,30 @@ export default function ChatInterface() {
           //   console.log(`Sending audio - amplitude: ${maxAmplitude}, frames with activity: ${recentAudioFramesWithActivity}`);
           // }
           
-          // Send PCM data to backend
-          ws.send(pcmData.buffer);
+          // If WebSocket is not ready, buffer the audio
+          if (!isWebSocketReady) {
+            if (audioBuffer.length < MAX_BUFFER_SIZE) {
+              audioBuffer.push(pcmData.buffer.slice(0)); // Clone the buffer
+            }
+            isFirstAudioFrame = false;
+            return;
+          }
+          
+          // Send any buffered audio first (only once when WebSocket becomes ready)
+          if (audioBuffer.length > 0) {
+            console.log(`Sending ${audioBuffer.length} buffered audio chunks`);
+            for (const bufferedChunk of audioBuffer) {
+              if (ws.readyState === WebSocket.OPEN) {
+                ws.send(bufferedChunk);
+              }
+            }
+            audioBuffer.length = 0; // Clear the buffer
+          }
+          
+          // Send current PCM data to backend
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(pcmData.buffer);
+          }
           isFirstAudioFrame = false;
         };
 
