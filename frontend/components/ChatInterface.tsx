@@ -263,7 +263,9 @@ export default function ChatInterface() {
       // Play audio if playback is enabled
       if (isPlaybackEnabled) {
         try {
-          const audioBlob = await apiService.textToSpeech(response.response, undefined, response.response_language || selectedLanguage);
+          // Use selected language for TTS unless it's auto-detect, then use detected language from response
+          const ttsLanguage = (selectedLanguage === 'auto') ? response.response_language : selectedLanguage;
+          const audioBlob = await apiService.textToSpeech(response.response, undefined, ttsLanguage || selectedLanguage);
           const audioUrl = URL.createObjectURL(audioBlob);
           const audio = new Audio(audioUrl);
           audio.play();
