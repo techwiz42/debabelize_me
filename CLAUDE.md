@@ -8,7 +8,7 @@ Debabelize Me is a voice-enabled chat application that leverages the **debabeliz
 
 **Important**: All STT and TTS functionality is accessed through the debabelizer module - we do not directly integrate with providers like Deepgram or ElevenLabs. See the debabelizer documentation at `~/debabelizer/README.md` for detailed information about the module's capabilities and configuration.
 
-**Current Status**: TTS is fully functional. STT has been implemented using a "fake streaming" approach that buffers audio and uses file API calls. However, Deepgram supports true WebSocket streaming that should provide better performance:
+**Current Status**: Both TTS and STT are fully functional. STT supports multiple providers with real-time streaming capabilities:
 
 1. **Phase 1 (2025-07-30a)**: Fixed WebSocket connection errors by resolving parameter conflicts in debabelizer library calls
 2. **Phase 2 (2025-07-30b)**: Fixed speech detection by properly configuring audio format handling for WebM/Opus streams from browsers  
@@ -929,6 +929,33 @@ async def _transfer_results():
 
 Once proper Azure Speech API credentials are configured, the debabelizer Azure STT provider should work reliably for both file transcription and streaming scenarios.
 
+## Phase 14 (2025-08-18): Word-Level Streaming Regression Fix - COMPLETED
+
+### Issue Summary
+Speech input was delayed by approximately 30 seconds before receiving transcription results. Investigation revealed that the frontend WebSocket handler had regressed to a "simple approach" that didn't properly handle Soniox's word-level streaming.
+
+### Root Cause Analysis
+The issue was a regression in the frontend code:
+1. **Missing Implementation**: The WebSocket message handler was using a simplified approach that didn't implement the word-level utterance building from Phase 13
+2. **Immediate Word Appending**: Every `is_final: true` result from Soniox (individual words) was being appended immediately without buffering
+3. **No Utterance Timeout**: The 1-second timeout for finalizing utterances was not implemented
+
+### Solution Implemented
+Re-implemented the proper word-level streaming handler from Phase 13:
+- **Word Detection**: Check for `is_final: true` AND `is_word: true` to identify individual words from Soniox
+- **Utterance Building**: Accumulate words in `currentUtteranceRef` with proper spacing
+- **Timeout-based Finalization**: Set 1-second timeout after each word to finalize complete utterances
+- **Interim Display**: Show building utterance as interim text for real-time feedback
+- **Provider Compatibility**: Handle both word-level (Soniox) and phrase-level (Deepgram) streaming
+
+### Technical Fix
+Updated `ChatInterface.tsx` WebSocket message handler to properly handle three cases:
+1. **Word-level finals** (`is_final && is_word`): Build utterance with timeout
+2. **Interim results** (`!is_final`): Show directly as preview text
+3. **Complete finals** (`is_final && !is_word`): Append immediately (Deepgram style)
+
+This ensures proper handling of Soniox's word-by-word streaming approach while maintaining compatibility with other providers.
+
 ## Testing Voice Features
 
 1. Click mic icon to start recording
@@ -937,3 +964,369 @@ Once proper Azure Speech API credentials are configured, the debabelizer Azure S
 4. Toggle speaker icon to enable/disable TTS playback
 5. Assistant responses will be spoken if TTS is enabled
 6. **Hands-free Mode (Phase 6)**: If recording was active before sending a message, it automatically restarts after the agent reply completes, allowing for continuous conversation without manual re-activation
+
+## How to Implement Real-Time STT in Other Projects
+
+This section provides a comprehensive guide for implementing similar real-time speech-to-text capabilities in other projects, based on our successful implementation.
+
+### Core Architecture Components
+
+#### 1. **Frontend Audio Processing (Web Audio API)**
+The foundation of real-time STT is proper audio capture and processing:
+
+```typescript
+// Use Web Audio API instead of MediaRecorder for real-time processing
+const audioContext = new AudioContext({ sampleRate: 16000 });
+const mediaStream = await navigator.mediaDevices.getUserMedia({ 
+  audio: { 
+    sampleRate: 16000,
+    channelCount: 1,
+    echoCancellation: true,
+    noiseSuppression: true 
+  } 
+});
+
+// Create audio processing pipeline
+const source = audioContext.createMediaStreamSource(mediaStream);
+const processor = audioContext.createScriptProcessor(512, 1, 1); // Small buffers for low latency
+
+processor.onaudioprocess = (event) => {
+  const inputBuffer = event.inputBuffer.getChannelData(0);
+  
+  // Convert Float32 to Int16 PCM with signal boost
+  const pcmData = new Int16Array(inputBuffer.length);
+  for (let i = 0; i < inputBuffer.length; i++) {
+    pcmData[i] = Math.max(-32768, Math.min(32767, inputBuffer[i] * 32768 * 1.5)); // 50% boost
+  }
+  
+  // Send to backend via WebSocket
+  if (websocket && websocket.readyState === WebSocket.OPEN) {
+    websocket.send(pcmData.buffer);
+  }
+};
+
+source.connect(processor);
+processor.connect(audioContext.destination);
+```
+
+#### 2. **WebSocket Communication Layer**
+Establish bidirectional communication for audio streaming:
+
+```typescript
+// Frontend WebSocket handler
+const websocket = new WebSocket('wss://your-backend.com/ws/stt');
+
+websocket.onopen = () => {
+  console.log('STT WebSocket connected');
+};
+
+websocket.onmessage = (event) => {
+  const data = JSON.parse(event.data);
+  
+  if (data.is_final && data.is_word) {
+    // Handle word-level streaming (Soniox style)
+    buildUtterance(data.text);
+  } else if (data.is_final && !data.is_word) {
+    // Handle complete utterances (Deepgram style)
+    finalizeTranscription(data.text);
+  } else if (!data.is_final) {
+    // Show interim results
+    showInterimText(data.text);
+  }
+};
+
+// Utterance building for word-level providers
+let currentUtterance = '';
+let utteranceTimeout = null;
+
+function buildUtterance(word) {
+  currentUtterance += (currentUtterance ? ' ' : '') + word;
+  showInterimText(currentUtterance);
+  
+  // Finalize after 1-second pause
+  clearTimeout(utteranceTimeout);
+  utteranceTimeout = setTimeout(() => {
+    finalizeTranscription(currentUtterance.trim());
+    currentUtterance = '';
+  }, 1000);
+}
+```
+
+#### 3. **Backend WebSocket Handler (FastAPI)**
+Process incoming audio and route to STT providers:
+
+```python
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+import asyncio
+import json
+
+app = FastAPI()
+
+@app.websocket("/ws/stt")
+async def websocket_stt_endpoint(websocket: WebSocket):
+    await websocket.accept()
+    
+    # Initialize STT provider session
+    provider = get_stt_provider()  # Your provider factory
+    session_id = await provider.start_streaming_transcription(
+        audio_format="pcm",
+        sample_rate=16000,
+        language="en"
+    )
+    
+    # Create concurrent tasks for audio processing and result streaming
+    async def process_audio():
+        try:
+            while True:
+                # Receive PCM audio chunks
+                audio_data = await websocket.receive_bytes()
+                await provider.stream_audio(session_id, audio_data)
+        except WebSocketDisconnect:
+            await provider.stop_streaming_transcription(session_id)
+    
+    async def stream_results():
+        try:
+            async for result in provider.get_streaming_results(session_id):
+                response = {
+                    "text": result.text,
+                    "is_final": result.is_final,
+                    "is_word": len(result.text.split()) == 1,  # Word detection
+                    "confidence": result.confidence,
+                    "timestamp": result.timestamp
+                }
+                await websocket.send_text(json.dumps(response))
+        except WebSocketDisconnect:
+            pass
+    
+    # Run both tasks concurrently
+    await asyncio.gather(
+        process_audio(),
+        stream_results(),
+        return_exceptions=True
+    )
+```
+
+#### 4. **Provider-Agnostic Interface**
+Create a unified interface for multiple STT providers:
+
+```python
+from abc import ABC, abstractmethod
+from dataclasses import dataclass
+from typing import AsyncGenerator, Optional
+
+@dataclass
+class StreamingResult:
+    text: str
+    is_final: bool
+    confidence: Optional[float] = None
+    timestamp: Optional[float] = None
+
+class STTProvider(ABC):
+    @abstractmethod
+    async def start_streaming_transcription(self, **kwargs) -> str:
+        """Start streaming session, return session_id"""
+        pass
+    
+    @abstractmethod
+    async def stream_audio(self, session_id: str, audio_data: bytes) -> None:
+        """Send audio chunk to streaming session"""
+        pass
+    
+    @abstractmethod
+    async def get_streaming_results(self, session_id: str) -> AsyncGenerator[StreamingResult, None]:
+        """Get real-time transcription results"""
+        pass
+    
+    @abstractmethod
+    async def stop_streaming_transcription(self, session_id: str) -> None:
+        """Stop streaming session"""
+        pass
+
+# Example provider implementation
+class DeepgramSTTProvider(STTProvider):
+    def __init__(self, api_key: str):
+        self.api_key = api_key
+        self.sessions = {}
+    
+    async def start_streaming_transcription(self, **kwargs) -> str:
+        # Implementation details...
+        pass
+```
+
+### Key Implementation Patterns
+
+#### 1. **Audio Format Standardization**
+- **Sample Rate**: 16kHz (optimal for speech recognition)
+- **Format**: Int16 PCM, mono channel
+- **Chunk Size**: 512 samples (~32ms at 16kHz) for low latency
+- **Signal Processing**: Apply 50% gain boost for better recognition
+
+#### 2. **Provider-Specific Handling**
+Different providers have different streaming approaches:
+
+```python
+# Word-level streaming (Soniox)
+if provider_type == "soniox":
+    # Each word comes as separate final result
+    result = StreamingResult(
+        text=word_text,
+        is_final=True,  # Each word is "final"
+        confidence=word_confidence
+    )
+
+# Phrase-level streaming (Deepgram)
+elif provider_type == "deepgram":
+    # Complete phrases with interim updates
+    result = StreamingResult(
+        text=phrase_text,
+        is_final=speech_finished,
+        confidence=phrase_confidence
+    )
+```
+
+#### 3. **Error Handling & Reconnection**
+Implement robust error handling for production use:
+
+```typescript
+// WebSocket reconnection logic
+let reconnectAttempts = 0;
+const maxReconnectAttempts = 3;
+
+function connectWebSocket() {
+  const ws = new WebSocket(WS_URL);
+  
+  ws.onopen = () => {
+    reconnectAttempts = 0; // Reset on successful connection
+  };
+  
+  ws.onclose = () => {
+    if (reconnectAttempts < maxReconnectAttempts) {
+      reconnectAttempts++;
+      setTimeout(connectWebSocket, 1000 * reconnectAttempts);
+    }
+  };
+  
+  ws.onerror = (error) => {
+    console.error('WebSocket error:', error);
+    // Implement fallback strategies
+  };
+  
+  return ws;
+}
+```
+
+#### 4. **Performance Optimizations**
+- **Pre-create AudioContext**: Avoid setup delays
+- **Minimal Buffering**: Use small buffer sizes for low latency
+- **Concurrent Processing**: Run audio streaming and result processing in parallel
+- **Resource Cleanup**: Properly dispose of audio contexts and WebSocket connections
+
+### Provider-Specific Examples
+
+#### Deepgram Integration
+```python
+from deepgram import DeepgramClient, LiveTranscriptionEvents
+
+class DeepgramSTTProvider(STTProvider):
+    async def start_streaming_transcription(self, **kwargs):
+        dg_connection = self.client.listen.websocket.v("1")
+        
+        @dg_connection.on(LiveTranscriptionEvents.Transcript)
+        def on_message(result):
+            # Process transcription results
+            self.result_queue.put_nowait(result)
+        
+        await dg_connection.start({
+            "model": "nova-2",
+            "language": "en-US",
+            "smart_format": True,
+            "interim_results": True,
+            "vad_events": True
+        })
+        
+        return session_id
+```
+
+#### Soniox Integration
+```python
+import soniox
+
+class SonioxSTTProvider(STTProvider):
+    async def start_streaming_transcription(self, **kwargs):
+        session_config = soniox.transcribe_live.SessionConfig(
+            audio_format="pcm_s16le",
+            sample_rate_hertz=16000,
+            num_audio_channels=1,
+            language="en"
+        )
+        
+        session_id = await self.client.start_streaming(
+            session_config,
+            has_pending_audio=True
+        )
+        
+        return session_id
+```
+
+### Testing & Debugging
+
+#### 1. **Audio Quality Testing**
+```python
+# Generate test audio for validation
+import numpy as np
+import struct
+
+def generate_test_audio(frequency=440, duration=1.0, sample_rate=16000):
+    """Generate sine wave for testing"""
+    t = np.linspace(0, duration, int(sample_rate * duration), False)
+    wave = 0.5 * np.sin(2 * np.pi * frequency * t)
+    pcm = (wave * 16000).astype(np.int16)
+    return struct.pack(f'{len(pcm)}h', *pcm)
+```
+
+#### 2. **WebSocket Testing**
+```python
+# Test backend WebSocket endpoint
+import asyncio
+import websockets
+import json
+
+async def test_stt_websocket():
+    async with websockets.connect("wss://your-backend.com/ws/stt") as websocket:
+        # Send test audio
+        test_audio = generate_test_audio()
+        await websocket.send(test_audio)
+        
+        # Collect results
+        async for message in websocket:
+            data = json.loads(message)
+            print(f"Transcription: {data['text']} (final: {data['is_final']})")
+```
+
+### Environment Configuration
+
+```bash
+# Required environment variables
+STT_PROVIDER=deepgram  # or soniox, google, azure
+DEEPGRAM_API_KEY=your_key_here
+SONIOX_API_KEY=your_key_here
+
+# Audio processing settings
+AUDIO_SAMPLE_RATE=16000
+AUDIO_CHUNK_SIZE=512
+TRANSCRIPTION_TIMEOUT=400
+
+# WebSocket settings
+WS_HOST=0.0.0.0
+WS_PORT=8000
+```
+
+### Deployment Considerations
+
+1. **HTTPS/WSS Required**: Browsers require secure connections for microphone access
+2. **CORS Configuration**: Ensure proper cross-origin settings for WebSocket connections
+3. **Resource Limits**: Monitor CPU usage for audio processing
+4. **API Rate Limits**: Implement proper throttling for STT provider APIs
+5. **Error Monitoring**: Log transcription errors and connection issues
+
+This architecture provides a robust foundation for real-time speech-to-text in web applications, with provider flexibility and production-ready error handling.

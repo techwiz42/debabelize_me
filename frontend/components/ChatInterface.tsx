@@ -99,8 +99,9 @@ export default function ChatInterface() {
   const isWebSocketReady = useRef<boolean>(false);
   const reconnectAttempts = useRef<number>(0);
   const maxReconnectAttempts = 3;
-  const currentUtteranceRef = useRef<string>('');
   const utteranceTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const lastInterimTextRef = useRef<string>('');
+  const currentUtteranceRef = useRef<string>('');
   const userStoppedRecording = useRef<boolean>(false);
   const isRecordingRef = useRef<boolean>(false);
   const isSendingMessage = useRef<boolean>(false);
@@ -318,6 +319,73 @@ export default function ChatInterface() {
     }
   };
 
+  // Create message handler function that can be reused with fresh closures
+  const createWebSocketMessageHandler = () => (event: MessageEvent) => {
+    console.log('Raw WebSocket message received:', event.data);
+    const data = JSON.parse(event.data);
+    console.log('Parsed WebSocket data:', data);
+    if (data.error) {
+      console.error('STT error:', data.error);
+    } else if (data.text) {
+      console.log(`STT result: "${data.text}" (final: ${data.is_final}, word: ${data.is_word})`);
+      
+      // Handle word-level streaming from Soniox
+      if (data.is_final && data.is_word) {
+        // Individual word from Soniox - build utterance
+        console.log('Word-level result from Soniox:', data.text);
+        
+        // Clear any existing timeout
+        if (utteranceTimeoutRef.current) {
+          clearTimeout(utteranceTimeoutRef.current);
+          utteranceTimeoutRef.current = null;
+        }
+        
+        // Add word to current utterance
+        currentUtteranceRef.current += (currentUtteranceRef.current ? ' ' : '') + data.text;
+        
+        // Show the building utterance as interim text
+        messageInputRef.current?.showInterimText(currentUtteranceRef.current);
+        
+        // Set timeout to finalize utterance after 1 second of silence
+        utteranceTimeoutRef.current = setTimeout(() => {
+          if (currentUtteranceRef.current.trim() && messageInputRef.current) {
+            console.log('Finalizing utterance after timeout:', currentUtteranceRef.current);
+            const utteranceToFinalize = currentUtteranceRef.current.trim();
+            currentUtteranceRef.current = ''; // Clear immediately to prevent double processing
+            messageInputRef.current.appendValue(utteranceToFinalize);
+            messageInputRef.current.clearInterimText();
+            messageInputRef.current.focus();
+          }
+          utteranceTimeoutRef.current = null; // Clear the timeout ref
+        }, 1000);
+        
+      } else if (!data.is_final) {
+        // Interim results (non-word) - show directly
+        console.log('Interim result:', data.text);
+        messageInputRef.current?.showInterimText(data.text);
+        lastInterimTextRef.current = data.text;
+        
+      } else if (data.is_final && !data.is_word) {
+        // Final complete utterance from other providers
+        console.log('Final utterance result:', data.text);
+        
+        // Clear any pending utterance timeout
+        if (utteranceTimeoutRef.current) {
+          clearTimeout(utteranceTimeoutRef.current);
+          utteranceTimeoutRef.current = null;
+        }
+        
+        // Clear any building utterance
+        currentUtteranceRef.current = '';
+        
+        // Append the complete result
+        messageInputRef.current?.appendValue(data.text);
+        messageInputRef.current?.clearInterimText();
+        messageInputRef.current?.focus();
+      }
+    }
+  };
+
   const toggleRecording = async (programmaticStop = false, forceStart = false) => {
     console.log('toggleRecording called:', {
       isRecording,
@@ -349,6 +417,7 @@ export default function ChatInterface() {
       // Set recording state immediately
       setIsRecording(true);
       isRecordingRef.current = true;
+      
       console.log('Recording state set to true');
       
       // Start recording using Thanotopolis-style PCM streaming
@@ -468,7 +537,7 @@ export default function ChatInterface() {
                     originalOnOpen.call(newWs, event);
                   }
                 };
-                newWs.onmessage = ws.onmessage;
+                newWs.onmessage = createWebSocketMessageHandler();
                 newWs.onerror = ws.onerror;
                 newWs.onclose = ws.onclose;
                 
@@ -636,66 +705,7 @@ export default function ChatInterface() {
           }, 30000);
         };
 
-        ws.onmessage = (event) => {
-          console.log('Raw WebSocket message received:', event.data, 'isLoading:', isLoading);
-          const data = JSON.parse(event.data);
-          console.log('Parsed WebSocket data:', data);
-          if (data.error) {
-            console.error('STT error:', data.error);
-          } else if (data.text) {
-            console.log(`STT result: "${data.text}" (final: ${data.is_final}, word: ${data.is_word}), isLoading: ${isLoading}`);
-            
-            if (data.is_final && data.is_word) {
-              // Handle word-level final results from Soniox
-              // Build up the complete utterance from individual words
-              currentUtteranceRef.current += (currentUtteranceRef.current ? ' ' : '') + data.text;
-              
-              // Show the current utterance being built as interim text
-              console.log('Building utterance, showing interim:', currentUtteranceRef.current);
-              messageInputRef.current?.showInterimText(currentUtteranceRef.current);
-              
-              // Clear any existing timeout
-              if (utteranceTimeoutRef.current) {
-                clearTimeout(utteranceTimeoutRef.current);
-              }
-              
-              // Set timeout to finalize utterance after pause (1 second of no new words)
-              utteranceTimeoutRef.current = setTimeout(() => {
-                if (currentUtteranceRef.current.trim()) {
-                  console.log('Finalizing complete utterance:', currentUtteranceRef.current);
-                  messageInputRef.current?.appendValue(currentUtteranceRef.current.trim());
-                  messageInputRef.current?.clearInterimText();
-                  currentUtteranceRef.current = '';
-                  // Always focus input after transcription
-                  messageInputRef.current?.focus();
-                }
-              }, 500); // Shorter timeout for faster finalization of single phrases
-              
-            } else if (data.is_final && !data.is_word) {
-              // Handle complete utterance final results (for providers that send complete phrases)
-              console.log('Complete utterance received, calling appendValue with:', data.text);
-              messageInputRef.current?.appendValue(data.text);
-              messageInputRef.current?.clearInterimText();
-              
-              // Clear word-level utterance building
-              currentUtteranceRef.current = '';
-              if (utteranceTimeoutRef.current) {
-                clearTimeout(utteranceTimeoutRef.current);
-                utteranceTimeoutRef.current = null;
-              }
-              
-              // Always focus input after transcription
-              messageInputRef.current?.focus();
-              
-            } else {
-              // For interim results, show in real-time preview
-              if (data.text.trim()) {
-                console.log('Calling showInterimText with:', data.text);
-                messageInputRef.current?.showInterimText(data.text);
-              }
-            }
-          }
-        };
+        ws.onmessage = createWebSocketMessageHandler();
 
         ws.onerror = (error) => {
           console.error('WebSocket error:', error);
@@ -747,7 +757,7 @@ export default function ChatInterface() {
       // Finalize any pending utterance when stopping recording
       if (currentUtteranceRef.current.trim()) {
         console.log('Recording stopped, finalizing pending utterance:', currentUtteranceRef.current);
-        messageInputRef.current?.appendValue(currentUtteranceRef.current.trim());
+        messageInputRef.current?.setValue(currentUtteranceRef.current.trim());
         messageInputRef.current?.clearInterimText();
         currentUtteranceRef.current = '';
       }
