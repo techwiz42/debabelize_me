@@ -41,6 +41,14 @@ class VoiceService:
             'optimize_for': getattr(settings, 'debabelizer_optimize_for', 'balanced')
         }
         
+        # Log config structure without exposing API keys
+        config_summary = {}
+        for key, value in config_dict.items():
+            if isinstance(value, dict) and 'api_key' in value:
+                config_summary[key] = {'api_key': '*' * 8}  # Mask API keys
+            else:
+                config_summary[key] = value
+        print(f"Creating DebabelizerConfig with providers: {list(config_dict.keys())}")
         return DebabelizerConfig(config_dict)
     
     async def initialize_processors(self):
@@ -48,6 +56,16 @@ class VoiceService:
         try:
             print(f"Starting initialization with STT provider: {settings.debabelizer_stt_provider}, TTS provider: {settings.debabelizer_tts_provider}")
             print(f"Available API keys: Deepgram={bool(settings.deepgram_api_key)}, ElevenLabs={bool(settings.elevenlabs_api_key)}, OpenAI={bool(settings.openai_api_key)}")
+            
+            # Debug: Check environment variables directly
+            import os
+            print(f"Environment variables check:")
+            print(f"SONIOX_API_KEY: {bool(os.getenv('SONIOX_API_KEY'))}")
+            print(f"OPENAI_API_KEY: {bool(os.getenv('OPENAI_API_KEY'))}")
+            print(f"DEEPGRAM_API_KEY: {bool(os.getenv('DEEPGRAM_API_KEY'))}")
+            
+            # Debug: Check config object being passed to VoiceProcessor (no sensitive data)
+            print(f"Config object passed to VoiceProcessor: <DebabelizerConfig object>")
             
             # Create STT processor
             if settings.debabelizer_stt_provider and self._has_stt_credentials():
